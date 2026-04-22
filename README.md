@@ -103,11 +103,13 @@ uv run python run_gateway.py
 
 ## 개발 워크플로우
 
+### 정식 경로 (권장)
+
 ```bash
 # 1) nanobot_runtime 자체 개발 (테스트 가능)
 cd agents/nanobot_runtime
 uv sync
-uv run pytest           # 22개 unit, 1개 integration marker
+uv run pytest           # unit + integration (e2e 는 marker 로 deselect)
 
 # 2) 변경 후 GitHub push
 git add -A && git commit -m "..."
@@ -118,6 +120,30 @@ cd agents/<workspace_name>/nanobot_runtime
 git pull
 # editable install 이므로 uv sync 재실행 불필요
 ```
+
+이 전체 흐름을 래핑한 스크립트:
+
+```bash
+# parent 가 clean + pushed 상태인지 검사 후 yuri clone 에서 git pull
+./scripts/sync-to-yuri.sh
+# 다른 clone 을 지정하려면
+WORKSPACE_CLONE=agents/otherws/nanobot_runtime ./scripts/sync-to-yuri.sh
+```
+
+### 긴급 경로 (rsync — 사용 후 반드시 commit+push)
+
+실서비스 중 급한 스모크용으로 parent 의 수정사항을 workspace clone 에 즉시 반영해야 할 때:
+
+```bash
+./scripts/sync-to-yuri.sh --quick
+# src/ + tests/ 를 rsync. parent git 상태를 같이 출력해서
+# 사용자가 **직후에 commit + push** 할 것을 상기시킨다.
+```
+
+**주의**: `--quick` 직후 parent commit+push 를 누락하면, clone 쪽은
+이미 파일이 바뀌어 있으므로 다음 번 `git pull` 이 "로컬 수정 vs
+incoming 같은 내용" 으로 merge conflict 를 발생시킨다. `--quick` 은
+**일시적 브릿지일 뿐** git 상태가 진실원천이다.
 
 ## 새 Hook 추가 가이드
 
