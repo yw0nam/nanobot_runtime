@@ -254,6 +254,12 @@ class DesktopMateChannel(BaseChannel):
             return
 
         # Fallback and explicit _stream_end both serialise as stream_end.
+        # Note: we deliberately do NOT clear ``_streams[stream_id]`` or
+        # ``_current_stream_id`` here. TTS synthesis runs concurrently with
+        # the agent loop; a ``tts_chunk`` may arrive via the hook's TTS
+        # Barrier **after** nanobot's manager has already dispatched
+        # ``_stream_end`` through the bus. Stream entries are cleared only
+        # when a new stream replaces them or the connection drops.
         await self._send_frame(
             conn,
             StreamEndFrame(
@@ -262,10 +268,6 @@ class DesktopMateChannel(BaseChannel):
                 proactive=proactive_flag,
             ),
         )
-        if meta.get("_stream_end") and stream_id and stream_id in self._streams:
-            self._streams.pop(stream_id, None)
-            if self._current_stream_id == stream_id:
-                self._current_stream_id = None
 
     # -- BaseChannel.send_delta --------------------------------------------
 
@@ -283,13 +285,23 @@ class DesktopMateChannel(BaseChannel):
         stream_id = meta.get("_stream_id")
         proactive_flag: bool | None = True if meta.get("proactive") else None
 
-        # Register this stream for TTSSink routing on first sight.
-        if stream_id and stream_id not in self._streams:
+        # First delta for a new stream: register the routing entry AND
+        # auto-emit a ``stream_start`` frame. Nanobot's channel manager
+        # never sets a ``_stream_start`` metadata itself, so without this
+        # the FE never sees the turn boundary.
+        is_new_stream = bool(stream_id) and stream_id not in self._streams
+        if is_new_stream:
             self._streams[stream_id] = (chat_id, bool(proactive_flag))
             self._current_stream_id = stream_id
+            await self._send_frame(
+                conn,
+                StreamStartFrame(chat_id=chat_id, proactive=proactive_flag),
+            )
 
         # _stream_end is routed here by nanobot's channel manager when it
-        # coalesces; mirror send() behaviour.
+        # coalesces. We deliberately keep stream state so a ``tts_chunk``
+        # arriving via the TTS Barrier after stream_end still has a
+        # chat_id to route to (see :meth:`send`).
         if meta.get("_stream_end"):
             await self._send_frame(
                 conn,
@@ -299,10 +311,6 @@ class DesktopMateChannel(BaseChannel):
                     proactive=proactive_flag,
                 ),
             )
-            if stream_id and stream_id in self._streams:
-                self._streams.pop(stream_id, None)
-                if self._current_stream_id == stream_id:
-                    self._current_stream_id = None
             return
 
         await self._send_frame(

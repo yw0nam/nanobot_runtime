@@ -129,11 +129,13 @@ async def test_send_delta_strips_emotion_emojis():
     )
 
     frames = _decode_frames(conn)
-    assert len(frames) == 1
-    assert frames[0]["event"] == "delta"
-    assert frames[0]["chat_id"] == "chat-A"
-    assert frames[0]["text"] == "hi  there"  # emoji removed, other chars preserved
-    assert frames[0]["stream_id"] == "s-1"
+    # First delta for a new stream also emits stream_start.
+    assert len(frames) == 2
+    assert frames[0]["event"] == "stream_start"
+    assert frames[1]["event"] == "delta"
+    assert frames[1]["chat_id"] == "chat-A"
+    assert frames[1]["text"] == "hi  there"  # emoji removed, other chars preserved
+    assert frames[1]["stream_id"] == "s-1"
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +201,101 @@ async def test_frame_ordering_delta_tts_stream_end():
 
     frames = _decode_frames(conn)
     events = [f["event"] for f in frames]
-    assert events == ["delta", "delta", "delta", "tts_chunk", "tts_chunk", "stream_end"]
+    # First send_delta for a new stream auto-emits stream_start so the FE
+    # knows a new turn has begun (nanobot's manager never sets a
+    # _stream_start metadata itself).
+    assert events == [
+        "stream_start",
+        "delta",
+        "delta",
+        "delta",
+        "tts_chunk",
+        "tts_chunk",
+        "stream_end",
+    ]
     assert frames[-1] == {
         "event": "stream_end",
         "chat_id": "chat-A",
         "content": "one two three",
     }
+
+
+# ---------------------------------------------------------------------------
+# 4b. stream_start auto-emitted on first delta with a new stream_id
+# ---------------------------------------------------------------------------
+
+
+async def test_first_delta_auto_emits_stream_start():
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    await channel.send_delta(
+        "chat-A",
+        "hi",
+        {"_stream_delta": True, "_stream_id": "s-auto"},
+    )
+
+    frames = _decode_frames(conn)
+    assert len(frames) == 2
+    assert frames[0] == {"event": "stream_start", "chat_id": "chat-A"}
+    assert frames[1]["event"] == "delta"
+
+
+async def test_second_delta_same_stream_does_not_repeat_start():
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    meta = {"_stream_delta": True, "_stream_id": "s-1"}
+    await channel.send_delta("chat-A", "one ", meta)
+    await channel.send_delta("chat-A", "two", meta)
+
+    events = [f["event"] for f in _decode_frames(conn)]
+    assert events == ["stream_start", "delta", "delta"]
+
+
+# ---------------------------------------------------------------------------
+# 4c. tts_chunk arriving AFTER stream_end still routes (TTS Barrier race)
+# ---------------------------------------------------------------------------
+
+
+async def test_tts_chunk_after_stream_end_still_routes():
+    """The TTS Barrier in TTSHook.on_stream_end awaits synthesis in a task
+    separate from the bus-dispatch loop. By the time a chunk arrives, the
+    channel may have already processed _stream_end. The channel must not
+    drop the chunk — the connection is still open and FE expects it.
+    """
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    # Full stream lifecycle: deltas then _stream_end.
+    meta = {"_stream_delta": True, "_stream_id": "s-late"}
+    await channel.send_delta("chat-A", "hello", meta)
+    await channel.send(OutboundMessage(
+        channel="desktop_mate",
+        chat_id="chat-A",
+        content="hello",
+        metadata={"_stream_end": True, "_stream_id": "s-late"},
+    ))
+
+    # Now (simulating the barrier race) a tts_chunk synthesised during
+    # the turn arrives.
+    await channel.send_tts_chunk(TTSChunk(
+        sequence=0,
+        text="hello",
+        audio_base64="AAAA",
+        emotion=None,
+        keyframes=[],
+    ))
+
+    frames = _decode_frames(conn)
+    events = [f["event"] for f in frames]
+    assert "tts_chunk" in events, f"Expected tts_chunk to be delivered, got {events}"
+    # tts_chunk routed to the same chat_id that the stream used.
+    tts_frame = next(f for f in frames if f["event"] == "tts_chunk")
+    assert tts_frame["chat_id"] == "chat-A"
 
 
 # ---------------------------------------------------------------------------
