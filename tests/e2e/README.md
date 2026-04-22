@@ -65,3 +65,54 @@ you can inspect it manually:
 ```bash
 tail -n 100 /tmp/yuri_e2e_gateway.log
 ```
+
+## Manual smoke: Phase 5 Idle Watcher
+
+Aggressive idle timeouts collide with the regular suite's timing, so
+idle nudge is verified with a standalone smoke rather than the fixture.
+
+**Prereqs:** same as the main suite (vLLM, Irodori, LTM MCP up).
+
+```bash
+cd ../yuri  # the workspace
+
+# Start the gateway with aggressive idle settings.
+YURI_IDLE_ENABLED=1 \
+YURI_IDLE_TIMEOUT_S=10 \
+YURI_IDLE_SCAN_INTERVAL_S=3 \
+YURI_IDLE_COOLDOWN_S=60 \
+YURI_IDLE_QUIET_START= \
+YURI_IDLE_QUIET_END= \
+.venv/bin/python run_gateway.py
+```
+
+Then in a second shell, connect a WS client, send one message, leave
+the connection idle, and watch for a second self-initiated
+`stream_start → delta → stream_end` cycle:
+
+```bash
+python - <<'PY'
+import asyncio, json, websockets
+
+async def main():
+    async with websockets.connect("ws://127.0.0.1:8765/ws?client_id=idle-smoke") as ws:
+        async def reader():
+            async for m in ws:
+                evt = json.loads(m)
+                print(evt.get("event"), evt.get("text", "")[:80])
+        asyncio.create_task(reader())
+        await asyncio.sleep(0.5)
+        await ws.send(json.dumps({"type": "new_chat", "content": "hi"}))
+        # Wait for first stream_end, then stay quiet for idle window.
+        await asyncio.sleep(30)  # 10s idle + 3s scan + LLM latency + margin
+
+asyncio.run(main())
+PY
+```
+
+Pass criteria:
+- A second `stream_start` frame arrives ~13–20s after the first
+  `stream_end` (gateway log shows `Idle nudge delivered: session=…`).
+- The delta content reflects an appropriate greeting (time-of-day aware
+  if the workspace timezone is set).
+- No second nudge within 60s after the first (cooldown honoured).
