@@ -67,6 +67,12 @@ class TTSSynthesizer(Protocol):
 class TTSSink(Protocol):
     async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
 
+    # Optional. When present and returning False, the hook skips synthesis
+    # entirely for this sentence — saving GPU / network traffic for clients
+    # that can't play audio. Sinks that don't implement this method are
+    # treated as "always enabled" for backward compatibility.
+    # def is_enabled(self) -> bool: ...
+
 
 # ---------------------------------------------------------------------------
 # Hook
@@ -147,6 +153,12 @@ class TTSHook(AgentHook):
     def _dispatch_sentence(self, sentence: str) -> None:
         text, emotion = self._preprocessor.process(sentence)
         if not text or not any(ch.isalnum() for ch in text):
+            return
+        # Honour the sink's opt-in TTS-off signal. Sinks without this method
+        # (e.g. older test fakes) are treated as always-enabled. We drop the
+        # sentence silently — no task created, no synthesis, no sequence bump.
+        is_enabled = getattr(self._sink, "is_enabled", None)
+        if callable(is_enabled) and not is_enabled():
             return
         sequence = self._sequence
         self._sequence += 1

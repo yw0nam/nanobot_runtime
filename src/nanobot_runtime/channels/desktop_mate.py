@@ -244,6 +244,22 @@ class DesktopMateChannel(BaseChannel):
                 return conn_flag
         return self._tts_enabled_per_chat.get(chat_id, True)
 
+    def is_tts_enabled_for_current_stream(self) -> bool:
+        """Public accessor for :class:`LazyChannelTTSSink`.
+
+        Returns True whenever we can't identify the current stream —
+        that's a "don't skip synthesis" signal so we default to useful
+        work when routing state hasn't caught up yet.
+        """
+        stream_id = self._current_stream_id
+        if stream_id is None:
+            return True
+        info = self._streams.get(stream_id)
+        if info is None:
+            return True
+        chat_id, _ = info
+        return self._tts_enabled_for_chat(chat_id)
+
     # -- Frame helpers -----------------------------------------------------
 
     def _strip_emotions(self, text: str) -> str:
@@ -583,6 +599,16 @@ class LazyChannelTTSSink:
     chunk is silently dropped — the agent loop stays healthy and FE will
     simply miss TTS for that window.
     """
+
+    def is_enabled(self) -> bool:
+        """Return the current stream's TTS policy, or True if no channel
+        has been constructed yet (safe default — hook does useful work).
+        """
+        try:
+            channel = get_desktop_mate_channel()
+        except RuntimeError:
+            return True
+        return channel.is_tts_enabled_for_current_stream()
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
         try:

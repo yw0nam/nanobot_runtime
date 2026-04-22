@@ -74,6 +74,51 @@ async def test_lazy_sink_drops_chunk_when_channel_absent(caplog):
     await sink.send_tts_chunk(chunk)
 
 
+async def test_lazy_sink_is_enabled_defaults_true_when_no_channel():
+    """Before any channel is constructed, default is 'enabled' so the
+    hook doesn't accidentally suppress TTS in test setups."""
+    sink = LazyChannelTTSSink()
+    assert sink.is_enabled() is True
+
+
+def test_channel_reports_tts_enabled_via_current_stream():
+    """DesktopMateChannel resolves current stream → chat_id → tts flag."""
+    channel = DesktopMateChannel(DesktopMateConfig(), _FakeBus())
+    channel._chat_conn["chat-A"] = object()
+    channel._streams["s-1"] = ("chat-A", False)
+    channel._current_stream_id = "s-1"
+
+    # Default: enabled
+    assert channel.is_tts_enabled_for_current_stream() is True
+
+    # Per-chat disable
+    channel._tts_enabled_per_chat["chat-A"] = False
+    assert channel.is_tts_enabled_for_current_stream() is False
+
+    # URL override re-enables even if per-chat is False
+    conn = channel._chat_conn["chat-A"]
+    channel._tts_enabled_per_conn[id(conn)] = True
+    assert channel.is_tts_enabled_for_current_stream() is True
+
+
+def test_channel_tts_enabled_defaults_when_no_active_stream():
+    """If nothing is routed yet, return True (safe default — hook will
+    have something to ask about when the first delta arrives anyway)."""
+    channel = DesktopMateChannel(DesktopMateConfig(), _FakeBus())
+    assert channel.is_tts_enabled_for_current_stream() is True
+
+
+async def test_lazy_sink_is_enabled_forwards_to_channel():
+    channel = DesktopMateChannel(DesktopMateConfig(), _FakeBus())
+    channel._chat_conn["chat-A"] = object()
+    channel._streams["s-1"] = ("chat-A", False)
+    channel._current_stream_id = "s-1"
+    channel._tts_enabled_per_chat["chat-A"] = False
+
+    sink = LazyChannelTTSSink()
+    assert sink.is_enabled() is False
+
+
 async def test_lazy_sink_forwards_to_registered_channel():
     channel = DesktopMateChannel(DesktopMateConfig(), _FakeBus())
 

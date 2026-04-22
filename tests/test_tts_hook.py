@@ -280,3 +280,78 @@ async def test_sequence_resets_per_hook_instance_across_turns() -> None:
 
     # Second turn's sequence starts at 0 again
     assert second_turn_chunks[0].sequence == 0
+
+
+# --------------------------------------------------------------------------
+# TTSSink.is_enabled — synthesis-skip path
+# --------------------------------------------------------------------------
+
+
+class _FakeSinkWithEnableFlag:
+    """Sink that also advertises an enable state, mimicking the real channel."""
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.chunks: list[TTSChunk] = []
+        self._enabled = enabled
+        self.is_enabled_calls = 0
+
+    def is_enabled(self) -> bool:
+        self.is_enabled_calls += 1
+        return self._enabled
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        self.chunks.append(chunk)
+
+
+async def test_is_enabled_false_skips_synthesis_entirely() -> None:
+    """When sink reports TTS disabled, the hook must not call the
+    synthesizer. This saves real GPU/network work for clients that
+    cannot play audio anyway.
+    """
+    sink = _FakeSinkWithEnableFlag(enabled=False)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker=_FakeChunker(),
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx()
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    assert synth.calls == [], f"synthesizer must not be called when disabled; got {synth.calls}"
+    assert sink.chunks == [], f"no chunk should have been emitted; got {sink.chunks}"
+
+
+async def test_is_enabled_true_keeps_default_behaviour() -> None:
+    sink = _FakeSinkWithEnableFlag(enabled=True)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker=_FakeChunker(),
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx()
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    assert synth.calls == ["Hello there."]
+    assert len(sink.chunks) == 1
+
+
+async def test_sink_without_is_enabled_defaults_to_enabled() -> None:
+    """Backward compat: sinks that don't expose is_enabled must still work
+    (the original TTSSink protocol had no such method)."""
+    hook, sink, synth = _make_hook()
+    assert not hasattr(sink, "is_enabled")
+
+    ctx = _ctx()
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    assert synth.calls == ["Hello there."]
+    assert len(sink.chunks) == 1
