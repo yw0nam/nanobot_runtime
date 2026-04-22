@@ -101,7 +101,7 @@ def _make_hook(
     sink = _FakeSink()
     synth = _FakeSynthesizer(latency=latency, fail_on=fail_on)
     hook = TTSHook(
-        chunker=_FakeChunker(),
+        chunker_factory=_FakeChunker,
         preprocessor=_FakePreprocessor(),
         emotion_mapper=_FakeEmotionMapper(),
         synthesizer=synth,
@@ -110,8 +110,10 @@ def _make_hook(
     return hook, sink, synth
 
 
-def _ctx(iteration: int = 0) -> AgentHookContext:
-    return AgentHookContext(iteration=iteration, messages=[])
+def _ctx(iteration: int = 0, session_key: str = "test-session") -> AgentHookContext:
+    return AgentHookContext(
+        iteration=iteration, messages=[], session_key=session_key
+    )
 
 
 # --------------------------------------------------------------------------
@@ -311,7 +313,7 @@ async def test_is_enabled_false_skips_synthesis_entirely() -> None:
     sink = _FakeSinkWithEnableFlag(enabled=False)
     synth = _FakeSynthesizer()
     hook = TTSHook(
-        chunker=_FakeChunker(),
+        chunker_factory=_FakeChunker,
         preprocessor=_FakePreprocessor(),
         emotion_mapper=_FakeEmotionMapper(),
         synthesizer=synth,
@@ -329,7 +331,7 @@ async def test_is_enabled_true_keeps_default_behaviour() -> None:
     sink = _FakeSinkWithEnableFlag(enabled=True)
     synth = _FakeSynthesizer()
     hook = TTSHook(
-        chunker=_FakeChunker(),
+        chunker_factory=_FakeChunker,
         preprocessor=_FakePreprocessor(),
         emotion_mapper=_FakeEmotionMapper(),
         synthesizer=synth,

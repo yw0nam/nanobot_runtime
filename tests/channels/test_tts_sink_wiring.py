@@ -101,11 +101,19 @@ def test_channel_reports_tts_enabled_via_current_stream():
     assert channel.is_tts_enabled_for_current_stream() is True
 
 
-def test_channel_tts_enabled_defaults_when_no_active_stream():
-    """If nothing is routed yet, return True (safe default — hook will
-    have something to ask about when the first delta arrives anyway)."""
+def test_channel_tts_enabled_is_false_when_no_active_stream():
+    """If no desktop_mate stream is currently registered, return False so
+    TTSHook does not synthesise for turns that belong to a different
+    channel (e.g. the idle-watcher firing through ``channel=cli``).
+
+    Previously the default was True with the rationale "hook will have
+    something to ask about when the first delta arrives anyway". Phase 5
+    broke that assumption by introducing cross-channel concurrency — see
+    ``src/.../channels/desktop_mate.py::is_tts_enabled_for_current_stream``
+    for the full context.
+    """
     channel = DesktopMateChannel(DesktopMateConfig(), _FakeBus())
-    assert channel.is_tts_enabled_for_current_stream() is True
+    assert channel.is_tts_enabled_for_current_stream() is False
 
 
 async def test_lazy_sink_is_enabled_forwards_to_channel():
