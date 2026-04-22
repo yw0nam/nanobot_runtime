@@ -134,6 +134,34 @@ async def test_agent_id_is_forwarded_when_set() -> None:
     )
 
 
+async def test_double_fire_at_iteration_zero_is_idempotent() -> None:
+    """Defense in depth: if `before_iteration` somehow fires twice at iteration==0
+    within the same turn (future runner change, retry path, etc.), the second call
+    must not re-search LTM nor append a duplicate block to the system prompt."""
+    ltm = AsyncMock()
+    ltm.search_memory.return_value = {
+        "results": [{"id": "m1", "memory": "User prefers dark roast coffee"}]
+    }
+    hook = LTMInjectionHook(ltm_client=ltm, user_id="sangjun")
+
+    ctx = AgentHookContext(
+        iteration=0,
+        messages=[
+            {"role": "system", "content": "You are yuri."},
+            {"role": "user", "content": "tell me what you know"},
+        ],
+    )
+    await hook.before_iteration(ctx)
+    await hook.before_iteration(ctx)
+
+    # Exactly one search — second fire short-circuits on the marker.
+    assert ltm.search_memory.await_count == 1
+    sys_content = ctx.messages[0]["content"]
+    # The header must appear exactly once (no duplicate block).
+    assert sys_content.count("Known Facts About You") == 1
+    assert sys_content.count("dark roast coffee") == 1
+
+
 async def test_prepends_system_message_when_none_exists() -> None:
     """If no system message is present, hook should create one with the memories."""
     ltm = AsyncMock()

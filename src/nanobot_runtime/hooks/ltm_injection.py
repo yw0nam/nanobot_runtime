@@ -72,6 +72,12 @@ class LTMInjectionHook(AgentHook):
         if context.iteration != 0:
             return
 
+        # Idempotent re-entry guard: if the system message already carries our
+        # block, skip — even a second iteration==0 fire in the same turn will
+        # not double-inject or trigger a redundant LTM search.
+        if _already_injected(context.messages):
+            return
+
         query = _last_user_message(context.messages)
         if query is None:
             return
@@ -89,6 +95,15 @@ class LTMInjectionHook(AgentHook):
         block = _format_memories(results)
         _append_to_system_message(context.messages, block)
         logger.info("LTM injection: {} memories for user={}", len(results), self._user_id)
+
+
+def _already_injected(messages: list[dict[str, Any]]) -> bool:
+    for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str) and _SECTION_HEADER in content:
+                return True
+    return False
 
 
 def _append_to_system_message(messages: list[dict[str, Any]], block: str) -> None:
