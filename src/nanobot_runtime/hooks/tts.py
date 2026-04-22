@@ -168,6 +168,15 @@ class TTSHook(AgentHook):
     async def _synth_and_emit(
         self, text: str, emotion: str | None, sequence: int
     ) -> None:
+        # Second-chance check: _dispatch_sentence already gated, but the
+        # sink's enabled state can change between "task scheduled" and
+        # "task running" — for instance when the channel hasn't yet
+        # registered the stream at dispatch time, then learns it's off.
+        # Re-checking here ensures we never call synthesize() for a
+        # stream that's known-disabled by the time we'd do the work.
+        is_enabled = getattr(self._sink, "is_enabled", None)
+        if callable(is_enabled) and not is_enabled():
+            return
         try:
             audio_b64 = await self._synthesizer.synthesize(text)
         except Exception:
