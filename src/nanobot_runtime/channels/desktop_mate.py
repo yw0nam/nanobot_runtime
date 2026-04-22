@@ -178,6 +178,16 @@ class DesktopMateChannel(BaseChannel):
         self._streams: dict[str, tuple[str, bool]] = {}
         # Most recently registered stream_id — used as "current" for send_tts_chunk
         self._current_stream_id: str | None = None
+        # TTS enable/disable state (MVP — channel-side short-circuit only;
+        # synthesis still runs. See migration-todo §3-C.α for the
+        # synthesis-skip follow-up that removes the wasted work).
+        # chat_id -> bool; absent == True (default enabled).
+        self._tts_enabled_per_chat: dict[str, bool] = {}
+        # connection identity -> bool; takes precedence over per-chat flags
+        # so URL ``?tts=0`` overrides per-message toggles for the whole
+        # socket. Connection objects are hashable; we key on id() to avoid
+        # relying on their __hash__ implementation.
+        self._tts_enabled_per_conn: dict[int, bool] = {}
         # Server state
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
@@ -192,12 +202,47 @@ class DesktopMateChannel(BaseChannel):
         for cid, conn in list(self._chat_conn.items()):
             if conn is connection:
                 self._chat_conn.pop(cid, None)
+                self._tts_enabled_per_chat.pop(cid, None)
+        self._tts_enabled_per_conn.pop(id(connection), None)
         # Drop any streams whose chat is gone.
         for sid, (cid, _) in list(self._streams.items()):
             if cid not in self._chat_conn:
                 self._streams.pop(sid, None)
                 if self._current_stream_id == sid:
                     self._current_stream_id = None
+
+    # -- TTS policy --------------------------------------------------------
+
+    @staticmethod
+    def _parse_bool_flag(value: str | None) -> bool | None:
+        """Parse ``?tts=<value>`` into a tri-state: True / False / None (no override)."""
+        if value is None:
+            return None
+        v = value.strip().lower()
+        if v in ("0", "false", "off", "no"):
+            return False
+        if v in ("1", "true", "on", "yes"):
+            return True
+        return None
+
+    def _apply_connection_tts_override(
+        self, connection: Any, query: dict[str, list[str]]
+    ) -> None:
+        """Read the URL ``tts`` param during handshake and record per-connection policy."""
+        values = query.get("tts") or []
+        flag = self._parse_bool_flag(values[0] if values else None)
+        if flag is None:
+            return
+        self._tts_enabled_per_conn[id(connection)] = flag
+
+    def _tts_enabled_for_chat(self, chat_id: str) -> bool:
+        """Effective policy: connection override wins over per-chat flag; default True."""
+        conn = self._chat_conn.get(chat_id)
+        if conn is not None:
+            conn_flag = self._tts_enabled_per_conn.get(id(conn))
+            if conn_flag is not None:
+                return conn_flag
+        return self._tts_enabled_per_chat.get(chat_id, True)
 
     # -- Frame helpers -----------------------------------------------------
 
@@ -340,6 +385,13 @@ class DesktopMateChannel(BaseChannel):
             logger.warning("desktop_mate: tts_chunk target gone (chat_id={})", chat_id)
             return
 
+        # Short-circuit when TTS is disabled for this chat/connection.
+        # Synthesis still happened upstream (MVP trade-off — see
+        # migration-todo §3-C.α). Dropping here still saves the FE from
+        # decoding and playing audio on a muted client.
+        if not self._tts_enabled_for_chat(chat_id):
+            return
+
         await self._send_frame(
             conn,
             TTSChunkFrame(
@@ -422,6 +474,9 @@ class DesktopMateChannel(BaseChannel):
                 chat_id = envelope.chat_id
 
             self._attach(chat_id, connection)
+            # Record per-chat TTS policy from the inbound flag. Connection
+            # URL override (``?tts=0``) still wins in ``_tts_enabled_for_chat``.
+            self._tts_enabled_per_chat[chat_id] = bool(envelope.tts_enabled)
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=chat_id,
@@ -465,6 +520,7 @@ class DesktopMateChannel(BaseChannel):
                     pass
                 return
 
+            self._apply_connection_tts_override(connection, query)
             await self._send_ready(connection, client_id=client_id)
 
             try:

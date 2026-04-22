@@ -478,6 +478,131 @@ def test_desktop_mate_config_defaults_keepalive_and_max_size():
 
 
 # ---------------------------------------------------------------------------
+# 11b. tts_enabled switch (per-message + URL override)
+# ---------------------------------------------------------------------------
+
+
+async def test_new_chat_with_tts_disabled_drops_tts_chunk():
+    """FE sends ``tts_enabled: false`` in new_chat → channel must not emit
+    any tts_chunk for that chat, even if synthesis produces one."""
+    channel, _ = _make_channel()
+    conn = FakeConnection(inbox=[
+        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": False}),
+    ])
+    await channel._connection_loop(conn, sender_id="user-1")
+    chat_id = next(iter(channel._chat_conn.keys()))
+
+    # Begin an outgoing stream on that chat so routing is set up.
+    await channel.send_delta(
+        chat_id,
+        "hi",
+        {"_stream_delta": True, "_stream_id": "s-1"},
+    )
+    conn.sent.clear()
+
+    await channel.send_tts_chunk(TTSChunk(
+        sequence=0, text="hi", audio_base64="AAAA",
+        emotion=None, keyframes=[],
+    ))
+
+    events = [f.get("event") for f in _decode_frames(conn)]
+    assert "tts_chunk" not in events, f"tts_chunk should be suppressed; got {events}"
+
+
+async def test_message_defaults_tts_enabled_true():
+    """Absent ``tts_enabled`` in an inbound message must default to True
+    so existing clients aren't silently muted."""
+    channel, _ = _make_channel()
+    conn = FakeConnection(inbox=[
+        json.dumps({"type": "new_chat", "content": "hi"}),  # no tts_enabled
+    ])
+    await channel._connection_loop(conn, sender_id="user-1")
+    chat_id = next(iter(channel._chat_conn.keys()))
+
+    await channel.send_delta(
+        chat_id,
+        "hi",
+        {"_stream_delta": True, "_stream_id": "s-1"},
+    )
+    conn.sent.clear()
+
+    await channel.send_tts_chunk(TTSChunk(
+        sequence=0, text="hi", audio_base64="AAAA",
+        emotion=None, keyframes=[],
+    ))
+
+    events = [f.get("event") for f in _decode_frames(conn)]
+    assert "tts_chunk" in events
+
+
+async def test_url_override_tts_zero_disables_connection_wide(monkeypatch):
+    """``?tts=0`` in the handshake URL disables TTS for the entire
+    connection regardless of per-message flags."""
+    channel, _ = _make_channel(token="")  # no token, auth open
+    conn = FakeConnection()
+
+    # Simulate handshake with tts=0 in the query string.
+    accepted = await channel._handshake(conn, query={"tts": ["0"]})
+    assert accepted is True
+
+    # Record the connection-level disable by the same mechanism that handler()
+    # would call after handshake. Future work moves this into handler(), but
+    # the helper already exists and makes the contract testable.
+    channel._apply_connection_tts_override(conn, {"tts": ["0"]})
+
+    # Attach a chat and simulate a message with ``tts_enabled: true`` —
+    # URL override must win.
+    conn_inbox = FakeConnection(inbox=[
+        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
+    ])
+    # Copy the override onto the per-test inbox connection.
+    channel._apply_connection_tts_override(conn_inbox, {"tts": ["0"]})
+    await channel._connection_loop(conn_inbox, sender_id="user-1")
+    chat_id = next(iter(channel._chat_conn.keys()))
+
+    await channel.send_delta(
+        chat_id,
+        "hi",
+        {"_stream_delta": True, "_stream_id": "s-url"},
+    )
+    conn_inbox.sent.clear()
+
+    await channel.send_tts_chunk(TTSChunk(
+        sequence=0, text="hi", audio_base64="AAAA",
+        emotion=None, keyframes=[],
+    ))
+
+    events = [f.get("event") for f in _decode_frames(conn_inbox)]
+    assert "tts_chunk" not in events
+
+
+async def test_url_tts_equals_one_is_a_noop():
+    """``?tts=1`` (or absent) leaves the default path enabled."""
+    channel, _ = _make_channel(token="")
+    conn = FakeConnection(inbox=[
+        json.dumps({"type": "new_chat", "content": "hi"}),
+    ])
+    channel._apply_connection_tts_override(conn, {"tts": ["1"]})
+    await channel._connection_loop(conn, sender_id="user-1")
+    chat_id = next(iter(channel._chat_conn.keys()))
+
+    await channel.send_delta(
+        chat_id,
+        "hi",
+        {"_stream_delta": True, "_stream_id": "s-1"},
+    )
+    conn.sent.clear()
+
+    await channel.send_tts_chunk(TTSChunk(
+        sequence=0, text="hi", audio_base64="AAAA",
+        emotion=None, keyframes=[],
+    ))
+
+    events = [f.get("event") for f in _decode_frames(conn)]
+    assert "tts_chunk" in events
+
+
+# ---------------------------------------------------------------------------
 # 12. __init__ accepts dict section (from nanobot.json via ChannelManager)
 # ---------------------------------------------------------------------------
 
