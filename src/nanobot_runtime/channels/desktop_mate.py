@@ -24,18 +24,29 @@ are explicitly out of scope and can layer on later.
 from __future__ import annotations
 
 import asyncio
-import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
+from pydantic import BaseModel, ValidationError
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 
+from nanobot_runtime.channels.desktop_mate_protocol import (
+    DeltaFrame,
+    MessageFrame,
+    NewChatFrame,
+    ReadyFrame,
+    StreamEndFrame,
+    StreamStartFrame,
+    TTSChunkFrame,
+    parse_inbound,
+)
 from nanobot_runtime.hooks.tts import TTSChunk
 
 
@@ -62,11 +73,84 @@ class DesktopMateConfig:
     token: str = ""
     allow_from: list[str] = field(default_factory=lambda: ["*"])
     streaming: bool = True
+    # WS protocol-level keepalive (seconds). Set to None to disable.
+    ping_interval_s: float | None = 20.0
+    ping_timeout_s: float | None = 20.0
+    # Max inbound frame size in bytes. 6MB accommodates the DMP image cap
+    # (~4.5MB binary ≈ ~6MB base64).
+    max_message_bytes: int = 6 * 1024 * 1024
+
+
+# Accept either snake_case (internal) or camelCase (nanobot.json convention).
+_CAMEL_TO_SNAKE: dict[str, str] = {
+    "allowFrom": "allow_from",
+    "pingIntervalS": "ping_interval_s",
+    "pingTimeoutS": "ping_timeout_s",
+    "maxMessageBytes": "max_message_bytes",
+}
+
+
+def _coerce_config(section: Any) -> DesktopMateConfig:
+    """Normalise a channel section into :class:`DesktopMateConfig`.
+
+    Accepts three shapes ChannelManager may emit:
+      * an existing ``DesktopMateConfig`` instance (used by tests and direct
+        Python callers) — returned unchanged;
+      * a dict parsed from ``nanobot.json`` (snake_case or camelCase);
+      * a pydantic-like section object — coerced via ``model_dump``.
+
+    Unknown keys are silently ignored so config file evolution doesn't
+    crash startup on a forgotten field.
+    """
+    if isinstance(section, DesktopMateConfig):
+        return section
+
+    if hasattr(section, "model_dump"):
+        raw: dict[str, Any] = section.model_dump()
+    elif isinstance(section, dict):
+        raw = dict(section)
+    else:
+        raw = {}
+
+    normalised: dict[str, Any] = {}
+    known = {f.name for f in DesktopMateConfig.__dataclass_fields__.values()}
+    for key, value in raw.items():
+        target = _CAMEL_TO_SNAKE.get(key, key)
+        if target in known:
+            normalised[target] = value
+    return DesktopMateConfig(**normalised)
 
 
 # ---------------------------------------------------------------------------
 # Channel
 # ---------------------------------------------------------------------------
+
+
+# Single-process registry for TTS sink lookup.
+#
+# ChannelManager builds the channel during gateway start-up, while hooks are
+# built per-AgentLoop. The two code paths don't share a reference, so the
+# channel registers itself here on construction and :class:`LazyChannelTTSSink`
+# resolves it at send time. In practice nanobot instantiates exactly one
+# DesktopMateChannel per process; repeat construction (e.g. hot reload or
+# test reruns) overwrites the entry.
+_LATEST_CHANNEL: "DesktopMateChannel | None" = None
+
+
+def get_desktop_mate_channel() -> "DesktopMateChannel":
+    """Return the active channel or raise if none has been constructed yet."""
+    if _LATEST_CHANNEL is None:
+        raise RuntimeError(
+            "DesktopMateChannel has not been constructed — check that "
+            "channels.desktop_mate is enabled in nanobot.json."
+        )
+    return _LATEST_CHANNEL
+
+
+def _reset_registry_for_tests() -> None:
+    """Test-only: wipe the registry between cases to avoid leakage."""
+    global _LATEST_CHANNEL
+    _LATEST_CHANNEL = None
 
 
 class DesktopMateChannel(BaseChannel):
@@ -82,8 +166,11 @@ class DesktopMateChannel(BaseChannel):
         *,
         emotion_emojis: set[str] | None = None,
     ) -> None:
-        super().__init__(config, bus)
-        self.config: DesktopMateConfig = config
+        coerced = _coerce_config(config)
+        super().__init__(coerced, bus)
+        self.config: DesktopMateConfig = coerced
+        global _LATEST_CHANNEL
+        _LATEST_CHANNEL = self
         self._emotion_emojis = emotion_emojis or set()
         # chat_id -> connection (1 connection per chat in desktop-mate's 1:1 model)
         self._chat_conn: dict[str, Any] = {}
@@ -122,13 +209,26 @@ class DesktopMateChannel(BaseChannel):
             out = out.replace(emoji, "")
         return out
 
-    async def _send_frame(self, connection: Any, payload: dict[str, Any]) -> None:
-        raw = json.dumps(payload, ensure_ascii=False)
+    async def _send_frame(self, connection: Any, frame: BaseModel) -> None:
+        raw = frame.model_dump_json(exclude_none=True)
         try:
             await connection.send(raw)
         except Exception as e:
             logger.warning("desktop_mate: send failed, dropping connection: {}", e)
             self._detach_connection(connection)
+
+    async def _send_ready(self, connection: Any, *, client_id: str) -> str:
+        """Emit the post-handshake ``ready`` frame. Returns the new connection_id."""
+        connection_id = str(uuid.uuid4())
+        await self._send_frame(
+            connection,
+            ReadyFrame(
+                connection_id=connection_id,
+                client_id=client_id,
+                server_time=time.time(),
+            ),
+        )
+        return connection_id
 
     # -- BaseChannel.send --------------------------------------------------
 
@@ -140,44 +240,32 @@ class DesktopMateChannel(BaseChannel):
             return
 
         meta = msg.metadata or {}
-        proactive = bool(meta.get("proactive"))
+        proactive_flag: bool | None = True if meta.get("proactive") else None
         stream_id = meta.get("_stream_id")
 
         if meta.get("_stream_start"):
-            frame: dict[str, Any] = {"event": "stream_start", "chat_id": msg.chat_id}
-            if proactive:
-                frame["proactive"] = True
             if stream_id:
-                self._streams[stream_id] = (msg.chat_id, proactive)
+                self._streams[stream_id] = (msg.chat_id, bool(proactive_flag))
                 self._current_stream_id = stream_id
-            await self._send_frame(conn, frame)
+            await self._send_frame(
+                conn,
+                StreamStartFrame(chat_id=msg.chat_id, proactive=proactive_flag),
+            )
             return
 
-        if meta.get("_stream_end"):
-            frame = {
-                "event": "stream_end",
-                "chat_id": msg.chat_id,
-                "content": msg.content,
-            }
-            if proactive:
-                frame["proactive"] = True
-            await self._send_frame(conn, frame)
-            if stream_id and stream_id in self._streams:
-                self._streams.pop(stream_id, None)
-                if self._current_stream_id == stream_id:
-                    self._current_stream_id = None
-            return
-
-        # Fallback: non-streaming final message. Treat it as a full-content
-        # stream_end so FE sees the reply.
-        frame = {
-            "event": "stream_end",
-            "chat_id": msg.chat_id,
-            "content": msg.content,
-        }
-        if proactive:
-            frame["proactive"] = True
-        await self._send_frame(conn, frame)
+        # Fallback and explicit _stream_end both serialise as stream_end.
+        await self._send_frame(
+            conn,
+            StreamEndFrame(
+                chat_id=msg.chat_id,
+                content=msg.content,
+                proactive=proactive_flag,
+            ),
+        )
+        if meta.get("_stream_end") and stream_id and stream_id in self._streams:
+            self._streams.pop(stream_id, None)
+            if self._current_stream_id == stream_id:
+                self._current_stream_id = None
 
     # -- BaseChannel.send_delta --------------------------------------------
 
@@ -193,41 +281,39 @@ class DesktopMateChannel(BaseChannel):
 
         meta = metadata or {}
         stream_id = meta.get("_stream_id")
-        proactive = bool(meta.get("proactive"))
+        proactive_flag: bool | None = True if meta.get("proactive") else None
 
         # Register this stream for TTSSink routing on first sight.
         if stream_id and stream_id not in self._streams:
-            self._streams[stream_id] = (chat_id, proactive)
+            self._streams[stream_id] = (chat_id, bool(proactive_flag))
             self._current_stream_id = stream_id
 
         # _stream_end is routed here by nanobot's channel manager when it
         # coalesces; mirror send() behaviour.
         if meta.get("_stream_end"):
-            frame: dict[str, Any] = {
-                "event": "stream_end",
-                "chat_id": chat_id,
-                "content": delta,
-            }
-            if proactive:
-                frame["proactive"] = True
-            await self._send_frame(conn, frame)
+            await self._send_frame(
+                conn,
+                StreamEndFrame(
+                    chat_id=chat_id,
+                    content=delta,
+                    proactive=proactive_flag,
+                ),
+            )
             if stream_id and stream_id in self._streams:
                 self._streams.pop(stream_id, None)
                 if self._current_stream_id == stream_id:
                     self._current_stream_id = None
             return
 
-        cleaned = self._strip_emotions(delta)
-        frame = {
-            "event": "delta",
-            "chat_id": chat_id,
-            "text": cleaned,
-        }
-        if stream_id:
-            frame["stream_id"] = stream_id
-        if proactive:
-            frame["proactive"] = True
-        await self._send_frame(conn, frame)
+        await self._send_frame(
+            conn,
+            DeltaFrame(
+                chat_id=chat_id,
+                text=self._strip_emotions(delta),
+                stream_id=stream_id,
+                proactive=proactive_flag,
+            ),
+        )
 
     # -- TTSSink -----------------------------------------------------------
 
@@ -246,18 +332,18 @@ class DesktopMateChannel(BaseChannel):
             logger.warning("desktop_mate: tts_chunk target gone (chat_id={})", chat_id)
             return
 
-        frame: dict[str, Any] = {
-            "event": "tts_chunk",
-            "chat_id": chat_id,
-            "sequence": chunk.sequence,
-            "text": chunk.text,
-            "audio_base64": chunk.audio_base64,
-            "emotion": chunk.emotion,
-            "keyframes": list(chunk.keyframes),
-        }
-        if proactive:
-            frame["proactive"] = True
-        await self._send_frame(conn, frame)
+        await self._send_frame(
+            conn,
+            TTSChunkFrame(
+                chat_id=chat_id,
+                sequence=chunk.sequence,
+                text=chunk.text,
+                audio_base64=chunk.audio_base64,
+                emotion=chunk.emotion,
+                keyframes=list(chunk.keyframes),
+                proactive=True if proactive else None,
+            ),
+        )
 
     # -- Auth / handshake --------------------------------------------------
 
@@ -306,52 +392,34 @@ class DesktopMateChannel(BaseChannel):
                     continue
 
             try:
-                envelope = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning("desktop_mate: bad JSON frame, ignored: {!r}", raw[:100])
-                continue
-            if not isinstance(envelope, dict):
-                continue
-
-            kind = envelope.get("type")
-            content = envelope.get("content")
-            if not isinstance(content, str) or not content.strip():
+                envelope = parse_inbound(raw)
+            except (ValidationError, ValueError) as e:
+                logger.warning(
+                    "desktop_mate: bad inbound frame, ignored: {} ({!r})",
+                    e,
+                    raw[:100],
+                )
                 continue
 
-            tts_enabled = bool(envelope.get("tts_enabled", True))
-            reference_id = envelope.get("reference_id")
             base_metadata: dict[str, Any] = {
-                "tts_enabled": tts_enabled,
-                "reference_id": reference_id,
+                "tts_enabled": envelope.tts_enabled,
+                "reference_id": envelope.reference_id,
                 "remote": getattr(connection, "remote_address", None),
             }
 
-            if kind == "new_chat":
+            if isinstance(envelope, NewChatFrame):
                 chat_id = str(uuid.uuid4())
-                self._attach(chat_id, connection)
-                await self._handle_message(
-                    sender_id=sender_id,
-                    chat_id=chat_id,
-                    content=content,
-                    metadata=base_metadata,
-                )
-                continue
+            else:
+                assert isinstance(envelope, MessageFrame)
+                chat_id = envelope.chat_id
 
-            if kind == "message":
-                chat_id = envelope.get("chat_id")
-                if not isinstance(chat_id, str) or not chat_id:
-                    logger.warning("desktop_mate: message without chat_id, ignored")
-                    continue
-                self._attach(chat_id, connection)
-                await self._handle_message(
-                    sender_id=sender_id,
-                    chat_id=chat_id,
-                    content=content,
-                    metadata=base_metadata,
-                )
-                continue
-
-            logger.debug("desktop_mate: unknown frame type={!r}, ignored", kind)
+            self._attach(chat_id, connection)
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                content=envelope.content,
+                metadata=base_metadata,
+            )
 
     # -- Server lifecycle --------------------------------------------------
 
@@ -389,6 +457,8 @@ class DesktopMateChannel(BaseChannel):
                     pass
                 return
 
+            await self._send_ready(connection, client_id=client_id)
+
             try:
                 await self._connection_loop(connection, sender_id=client_id)
             except Exception as e:
@@ -404,7 +474,14 @@ class DesktopMateChannel(BaseChannel):
         )
 
         async def runner() -> None:
-            async with serve(handler, self.config.host, self.config.port) as server:
+            async with serve(
+                handler,
+                self.config.host,
+                self.config.port,
+                ping_interval=self.config.ping_interval_s,
+                ping_timeout=self.config.ping_timeout_s,
+                max_size=self.config.max_message_bytes,
+            ) as server:
                 self._server = server
                 assert self._stop_event is not None
                 await self._stop_event.wait()
@@ -431,3 +508,22 @@ class DesktopMateChannel(BaseChannel):
         self._chat_conn.clear()
         self._streams.clear()
         self._current_stream_id = None
+
+
+class LazyChannelTTSSink:
+    """TTSSink that resolves the active DesktopMateChannel at send time.
+
+    ``TTSHook`` takes a sink at construction, but the channel is created
+    later on a different code path. Doing the lookup lazily (per-chunk)
+    avoids ordering constraints. If the channel isn't available yet the
+    chunk is silently dropped — the agent loop stays healthy and FE will
+    simply miss TTS for that window.
+    """
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        try:
+            channel = get_desktop_mate_channel()
+        except RuntimeError:
+            # Channel not constructed yet — drop silently.
+            return
+        await channel.send_tts_chunk(chunk)

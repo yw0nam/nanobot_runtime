@@ -27,6 +27,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/nanobot_runtime"]
 
+# Nanobot's ChannelManager discovers external channel plugins through the
+# ``nanobot.channels`` entry_point group. The section key in nanobot.json
+# (``channels.desktop_mate``) must match the entry_point name below.
+[project.entry-points."nanobot.channels"]
+desktop_mate = "nanobot_runtime.channels.desktop_mate:DesktopMateChannel"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

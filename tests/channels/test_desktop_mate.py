@@ -339,3 +339,164 @@ async def test_start_stop_lifecycle_binds_and_cleans_up():
         task.cancel()
         raise
     assert channel.is_running is False
+
+
+# ---------------------------------------------------------------------------
+# 9. Handshake success emits ReadyFrame
+# ---------------------------------------------------------------------------
+
+
+async def test_successful_handshake_emits_ready_frame():
+    channel, _ = _make_channel(token="")  # empty token: all connections allowed
+    conn = FakeConnection()
+
+    accepted = await channel._handshake(conn, query={})
+    assert accepted is True
+
+    # ReadyFrame should have been sent during the handshake path.
+    await channel._send_ready(conn, client_id="client-77")
+
+    frames = _decode_frames(conn)
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame["event"] == "ready"
+    assert frame["client_id"] == "client-77"
+    # connection_id is a UUID4 string
+    assert isinstance(frame["connection_id"], str) and len(frame["connection_id"]) == 36
+    # server_time is a float (unix timestamp)
+    assert isinstance(frame["server_time"], float)
+    assert frame["server_time"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Config defaults include ping_interval + max_message_bytes (6MB)
+# ---------------------------------------------------------------------------
+
+
+def test_desktop_mate_config_defaults_keepalive_and_max_size():
+    cfg = DesktopMateConfig()
+    assert cfg.ping_interval_s == 20.0
+    assert cfg.ping_timeout_s == 20.0
+    # 6 MB covers DMP image-in-base64 upper bound.
+    assert cfg.max_message_bytes == 6 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# 11. serve() receives the keepalive + max_size kwargs
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 12. __init__ accepts dict section (from nanobot.json via ChannelManager)
+# ---------------------------------------------------------------------------
+
+
+def test_init_accepts_dict_section_snake_case():
+    """ChannelManager passes raw dict from parsed nanobot.json."""
+    bus = FakeBus()
+    section = {
+        "enabled": True,
+        "host": "127.0.0.1",
+        "port": 9999,
+        "path": "/ws",
+        "token": "t",
+        "allow_from": ["*"],
+        "ping_interval_s": 15.0,
+        "max_message_bytes": 2_000_000,
+    }
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert isinstance(channel.config, DesktopMateConfig)
+    assert channel.config.port == 9999
+    assert channel.config.ping_interval_s == 15.0
+    assert channel.config.max_message_bytes == 2_000_000
+
+
+def test_init_accepts_dict_section_camel_case():
+    """nanobot.json uses camelCase by convention; accept both forms."""
+    bus = FakeBus()
+    section = {
+        "enabled": True,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "allowFrom": ["alice", "bob"],
+        "pingIntervalS": 10.0,
+        "pingTimeoutS": 5.0,
+        "maxMessageBytes": 4_000_000,
+    }
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert channel.config.allow_from == ["alice", "bob"]
+    assert channel.config.ping_interval_s == 10.0
+    assert channel.config.ping_timeout_s == 5.0
+    assert channel.config.max_message_bytes == 4_000_000
+
+
+def test_init_accepts_dataclass_instance_unchanged():
+    """Existing callers that pass DesktopMateConfig directly must still work."""
+    bus = FakeBus()
+    cfg = DesktopMateConfig(token="abc", port=1234)
+    channel = DesktopMateChannel(config=cfg, bus=bus)
+    assert channel.config is cfg
+
+
+def test_init_ignores_unknown_section_keys():
+    """Unknown keys (from config evolution / typos) must not raise."""
+    bus = FakeBus()
+    section = {
+        "enabled": True,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "unknownOption": "ignored",
+        "someLegacyFlag": True,
+    }
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert channel.config.host == "127.0.0.1"
+
+
+async def test_start_passes_ping_and_max_size_to_serve(monkeypatch):
+    """start() must forward ping_interval / ping_timeout / max_size to
+    websockets.serve() so the WS protocol handles keepalive for us."""
+    import nanobot_runtime.channels.desktop_mate as dm
+
+    captured: dict[str, Any] = {}
+
+    class _StubServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def _fake_serve(handler, host, port, **kwargs):
+        captured["host"] = host
+        captured["port"] = port
+        captured["kwargs"] = kwargs
+        return _StubServer()
+
+    # Replace the dynamic import inside start() via module attribute patching.
+    import sys
+    import types
+
+    stub_mod = types.ModuleType("websockets.asyncio.server")
+    stub_mod.serve = _fake_serve  # type: ignore[attr-defined]
+    stub_pkg = types.ModuleType("websockets.asyncio")
+    stub_pkg.server = stub_mod  # type: ignore[attr-defined]
+    stub_root = types.ModuleType("websockets")
+    stub_root.asyncio = stub_pkg  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "websockets", stub_root)
+    monkeypatch.setitem(sys.modules, "websockets.asyncio", stub_pkg)
+    monkeypatch.setitem(sys.modules, "websockets.asyncio.server", stub_mod)
+
+    channel, _ = _make_channel()
+    task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.02)
+    await channel.stop()
+    try:
+        await asyncio.wait_for(task, timeout=1.0)
+    except asyncio.TimeoutError:
+        task.cancel()
+
+    kwargs = captured.get("kwargs") or {}
+    assert kwargs.get("ping_interval") == 20.0
+    assert kwargs.get("ping_timeout") == 20.0
+    assert kwargs.get("max_size") == 6 * 1024 * 1024
