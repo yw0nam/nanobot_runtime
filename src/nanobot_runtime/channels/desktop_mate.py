@@ -291,16 +291,24 @@ class DesktopMateChannel(BaseChannel):
     def is_tts_enabled_for_current_stream(self) -> bool:
         """Public accessor for :class:`LazyChannelTTSSink`.
 
-        Returns True whenever we can't identify the current stream —
-        that's a "don't skip synthesis" signal so we default to useful
-        work when routing state hasn't caught up yet.
+        Returns ``False`` whenever no desktop_mate stream is currently
+        registered. This is the gate that keeps TTSHook from synthesising
+        for turns running on *other* channels (e.g. the Phase-5 idle
+        watcher firing through ``channel=cli``): those turns never set
+        ``_current_stream_id`` on this channel, so we correctly decline
+        to emit audio for them.
+
+        The previous default (``True`` when no stream) was a holdover from
+        a single-channel assumption that Phase 5 broke. See
+        migration-todo §3-D (Scenario C regression) and the tts.py
+        "Per-session state" section.
         """
         stream_id = self._current_stream_id
         if stream_id is None:
-            return True
+            return False
         info = self._streams.get(stream_id)
         if info is None:
-            return True
+            return False
         chat_id, _ = info
         return self._tts_enabled_for_chat(chat_id)
 

@@ -162,7 +162,11 @@ class Harness:
         # Reset hook sequence at a turn boundary (iteration==0 + no pending).
         from nanobot.agent.hook import AgentHookContext
 
-        ctx = AgentHookContext(iteration=0, messages=[])
+        ctx = AgentHookContext(
+            iteration=0,
+            messages=[],
+            session_key=f"desktop_mate:{chat_id}",
+        )
 
         for delta in deltas:
             # Channel dispatches the delta first so stream routing state is
@@ -225,7 +229,7 @@ def build_harness(
     }
     synth = RecordingSynthesizer()
     hook = TTSHook(
-        chunker=SentenceChunker(min_chunk_length=min_chunk_length),
+        chunker_factory=lambda: SentenceChunker(min_chunk_length=min_chunk_length),
         preprocessor=Preprocessor(known_emojis=frozenset(emojis)),
         emotion_mapper=EmotionMapper(emotion_map),
         synthesizer=synth,

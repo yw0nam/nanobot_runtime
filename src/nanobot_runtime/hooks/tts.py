@@ -15,12 +15,26 @@ call, matching DMP's single-turn semantics.
 Dependencies are injected as protocols so the hook is unit-testable without
 real TTS infra. Real implementations (fast_bunkai chunker, IrodoriTTS
 synth, emotion-motion YAML map) are provided by separate modules.
+
+Per-session state (since 2026-04-22)
+------------------------------------
+nanobot's AgentLoop runs up to ``NANOBOT_MAX_CONCURRENT_REQUESTS`` turns in
+parallel and shares a single ``_extra_hooks`` list across all sessions/
+channels, so one TTSHook instance sees deltas from every concurrent turn
+interleaved. The hook therefore keeps a **per-session** chunker/sequence/
+pending-tasks state bundle keyed on ``AgentHookContext.session_key``
+(added upstream in the nanobot fork). Turns on non-desktop channels (e.g.
+the idle-watcher firing through ``channel=cli``) still drive ``on_stream``,
+but the sink's ``is_enabled()`` gate returns ``False`` for them, so their
+sentences never consume a sequence number. When ``session_key`` is ``None``
+(caller didn't supply one — stale nanobot, or a test) the hook falls back
+to a shared ``_default`` state bucket and emits a warning once.
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from loguru import logger
 from nanobot.agent.hook import AgentHook, AgentHookContext
@@ -75,6 +89,21 @@ class TTSSink(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# Per-session state
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _SessionState:
+    chunker: SentenceChunker
+    sequence: int = 0
+    pending: list[asyncio.Task[None]] = field(default_factory=list)
+
+
+_FALLBACK_SESSION_KEY = "__tts_hook_default__"
+
+
+# ---------------------------------------------------------------------------
 # Hook
 # ---------------------------------------------------------------------------
 
@@ -83,7 +112,7 @@ class TTSHook(AgentHook):
     def __init__(
         self,
         *,
-        chunker: SentenceChunker,
+        chunker_factory: Callable[[], SentenceChunker],
         preprocessor: TextPreprocessor,
         emotion_mapper: EmotionMapper,
         synthesizer: TTSSynthesizer,
@@ -91,14 +120,14 @@ class TTSHook(AgentHook):
         barrier_timeout_seconds: float = 30.0,
     ) -> None:
         super().__init__()
-        self._chunker = chunker
+        self._chunker_factory = chunker_factory
         self._preprocessor = preprocessor
         self._emotion_mapper = emotion_mapper
         self._synthesizer = synthesizer
         self._sink = sink
         self._barrier_timeout = barrier_timeout_seconds
-        self._sequence = 0
-        self._pending: list[asyncio.Task[None]] = []
+        self._states: dict[str, _SessionState] = {}
+        self._fallback_warned = False
 
     def wants_streaming(self) -> bool:
         return True
@@ -106,11 +135,9 @@ class TTSHook(AgentHook):
     async def on_stream(self, context: AgentHookContext, delta: str) -> None:
         if not delta:
             return
-        # First delta of a new turn: reset sequence counter.
-        if context.iteration == 0 and self._sequence and not self._pending:
-            self._sequence = 0
-        for sentence in self._chunker.feed(delta):
-            self._dispatch_sentence(sentence)
+        state = self._state_for(context)
+        for sentence in state.chunker.feed(delta):
+            self._dispatch_sentence(state, sentence)
 
     async def on_stream_end(
         self, context: AgentHookContext, *, resuming: bool
@@ -121,36 +148,66 @@ class TTSHook(AgentHook):
         if resuming:
             return
 
-        remainder = self._chunker.flush()
+        key = self._session_key(context)
+        state = self._states.get(key)
+        if state is None:
+            # Turn produced no deltas for this session — nothing to drain.
+            return
+
+        remainder = state.chunker.flush()
         if remainder:
-            self._dispatch_sentence(remainder)
+            self._dispatch_sentence(state, remainder)
 
         # TTS Barrier: block until every pending synth task settles, so the
         # caller (channel) can emit stream_end immediately after this returns.
-        if self._pending:
+        if state.pending:
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(*self._pending, return_exceptions=True),
+                    asyncio.gather(*state.pending, return_exceptions=True),
                     timeout=self._barrier_timeout,
                 )
             except TimeoutError:
                 logger.warning(
-                    "TTS Barrier timeout ({}s) — {} tasks still pending; cancelling.",
+                    "TTS Barrier timeout ({}s) — {} tasks still pending; "
+                    "cancelling. (session={})",
                     self._barrier_timeout,
-                    sum(1 for t in self._pending if not t.done()),
+                    sum(1 for t in state.pending if not t.done()),
+                    key,
                 )
-                for t in self._pending:
+                for t in state.pending:
                     if not t.done():
                         t.cancel()
-            self._pending.clear()
 
-        self._sequence = 0
+        # Turn fully wrapped — drop the per-session bucket so the next turn
+        # for the same session starts clean (sequence back to 0, fresh chunker).
+        self._states.pop(key, None)
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
 
-    def _dispatch_sentence(self, sentence: str) -> None:
+    def _session_key(self, context: AgentHookContext) -> str:
+        key = getattr(context, "session_key", None)
+        if key is None:
+            if not self._fallback_warned:
+                logger.warning(
+                    "TTSHook: AgentHookContext.session_key is None — falling "
+                    "back to a shared default bucket. Update the nanobot "
+                    "dependency so concurrent turns don't share TTS state."
+                )
+                self._fallback_warned = True
+            return _FALLBACK_SESSION_KEY
+        return key
+
+    def _state_for(self, context: AgentHookContext) -> _SessionState:
+        key = self._session_key(context)
+        state = self._states.get(key)
+        if state is None:
+            state = _SessionState(chunker=self._chunker_factory())
+            self._states[key] = state
+        return state
+
+    def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
         text, emotion = self._preprocessor.process(sentence)
         if not text or not any(ch.isalnum() for ch in text):
             return
@@ -160,10 +217,10 @@ class TTSHook(AgentHook):
         is_enabled = getattr(self._sink, "is_enabled", None)
         if callable(is_enabled) and not is_enabled():
             return
-        sequence = self._sequence
-        self._sequence += 1
+        sequence = state.sequence
+        state.sequence += 1
         task = asyncio.create_task(self._synth_and_emit(text, emotion, sequence))
-        self._pending.append(task)
+        state.pending.append(task)
 
     async def _synth_and_emit(
         self, text: str, emotion: str | None, sequence: int
