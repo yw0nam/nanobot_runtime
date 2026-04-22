@@ -654,6 +654,50 @@ def test_init_accepts_dataclass_instance_unchanged():
     assert channel.config is cfg
 
 
+def test_init_loads_emotion_emojis_from_yaml_path(tmp_path):
+    """Production path: channel reads the emoji set from the same YAML the
+    TTSHook's EmotionMapper uses, keeping the two in sync."""
+    yaml_path = tmp_path / "tts_rules.yml"
+    yaml_path.write_text(
+        "emotion_motion_map:\n"
+        "  \"😊\":\n"
+        "    keyframes:\n"
+        "      - duration: 0.3\n"
+        "        targets:\n"
+        "          happy: 1.0\n"
+        "  \"😢\":\n"
+        "    keyframes:\n"
+        "      - duration: 0.3\n"
+        "        targets:\n"
+        "          sad: 1.0\n"
+        "  default:\n"
+        "    keyframes:\n"
+        "      - duration: 0.3\n"
+        "        targets:\n"
+        "          neutral: 1.0\n",
+        encoding="utf-8",
+    )
+    bus = FakeBus()
+    section = {"enabled": True, "emotionMapPath": str(yaml_path)}
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert channel._emotion_emojis == {"😊", "😢"}
+
+
+def test_init_missing_yaml_falls_back_to_empty_set():
+    """Non-existent emotion map path must not crash startup."""
+    bus = FakeBus()
+    section = {"enabled": True, "emotionMapPath": "/nonexistent/tts_rules.yml"}
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert channel._emotion_emojis == set()
+
+
+def test_init_without_emotion_map_path_has_empty_set():
+    bus = FakeBus()
+    section = {"enabled": True}
+    channel = DesktopMateChannel(config=section, bus=bus)
+    assert channel._emotion_emojis == set()
+
+
 def test_init_ignores_unknown_section_keys():
     """Unknown keys (from config evolution / typos) must not raise."""
     bus = FakeBus()

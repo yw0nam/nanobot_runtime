@@ -38,5 +38,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: tests that require a running ltm-mcp server",
+    "e2e: live-infrastructure tests (spawn a real gateway against vLLM/Irodori/LTM)",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not e2e'"

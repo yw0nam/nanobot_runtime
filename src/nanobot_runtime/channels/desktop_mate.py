@@ -79,6 +79,13 @@ class DesktopMateConfig:
     # Max inbound frame size in bytes. 6MB accommodates the DMP image cap
     # (~4.5MB binary ≈ ~6MB base64).
     max_message_bytes: int = 6 * 1024 * 1024
+    # Path to the YAML file whose ``emotion_motion_map`` keys enumerate the
+    # emojis the channel should strip from outbound ``delta`` text. Same file
+    # the TTSHook loads for keyframe mapping — kept in sync naturally.
+    # When unset the channel does no stripping (tests explicitly inject the
+    # set via the ``emotion_emojis`` kwarg; production must point this at
+    # the workspace's ``tts_rules.yml``).
+    emotion_map_path: str | None = None
 
 
 # Accept either snake_case (internal) or camelCase (nanobot.json convention).
@@ -87,7 +94,35 @@ _CAMEL_TO_SNAKE: dict[str, str] = {
     "pingIntervalS": "ping_interval_s",
     "pingTimeoutS": "ping_timeout_s",
     "maxMessageBytes": "max_message_bytes",
+    "emotionMapPath": "emotion_map_path",
 }
+
+
+def _load_emotion_emojis_from_yaml(path: str) -> set[str]:
+    """Extract the keys of ``emotion_motion_map`` from a YAML file.
+
+    Shared source of truth with :class:`EmotionMapper.from_yaml`. Returns
+    an empty set on any load error — better to miss emoji stripping than
+    to crash gateway startup over a missing config file.
+    """
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as stream:
+            data = yaml.safe_load(stream) or {}
+    except (OSError, Exception) as e:  # noqa: BLE001 — tolerate any load error
+        logger.warning(
+            "desktop_mate: failed to load emotion map from {}: {}",
+            path,
+            e,
+        )
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    mapping = data.get("emotion_motion_map", {})
+    if not isinstance(mapping, dict):
+        return set()
+    return {k for k in mapping if isinstance(k, str) and k != "default"}
 
 
 def _coerce_config(section: Any) -> DesktopMateConfig:
@@ -171,7 +206,16 @@ class DesktopMateChannel(BaseChannel):
         self.config: DesktopMateConfig = coerced
         global _LATEST_CHANNEL
         _LATEST_CHANNEL = self
-        self._emotion_emojis = emotion_emojis or set()
+        # Emoji-stripping set: explicit kwarg (tests) wins, else load from
+        # config-specified YAML (production path). Empty set = no stripping.
+        if emotion_emojis is not None:
+            self._emotion_emojis = set(emotion_emojis)
+        elif coerced.emotion_map_path:
+            self._emotion_emojis = _load_emotion_emojis_from_yaml(
+                coerced.emotion_map_path
+            )
+        else:
+            self._emotion_emojis = set()
         # chat_id -> connection (1 connection per chat in desktop-mate's 1:1 model)
         self._chat_conn: dict[str, Any] = {}
         # stream_id -> (chat_id, proactive flag) for TTSSink routing

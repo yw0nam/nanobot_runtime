@@ -65,6 +65,12 @@ class IrodoriClient:
         if not tts_text:
             return None
 
+        # Entry log: lets regression E2E verify "synthesize() was NOT
+        # called" for TTS-off cases by grepping the gateway log. Truncate
+        # long text to keep the line bounded.
+        preview = tts_text if len(tts_text) <= 60 else tts_text[:57] + "..."
+        logger.info("IrodoriClient.synthesize: {!r}", preview)
+
         reference_audio_path = self._resolve_reference_audio()
         if self.reference_id is not None and reference_audio_path is None:
             # Reference requested but couldn't be resolved — fail closed.
