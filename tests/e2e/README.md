@@ -49,12 +49,12 @@ YURI_E2E_TIMEOUT=40 pytest tests/e2e/ -m e2e
 | C — long response | SentenceChunker produces ≥2 `tts_chunk`s with increasing `sequence` |
 | D — emotion emoji | stripped from `delta.text`; preserved in `tts_chunk.text`; `emotion` tag set |
 | E — parallel chats | two concurrent WS connections receive distinct `chat_id`s, no cross-talk |
+| F — reconnect | close WS, new WS with same `chat_id` → agent recalls a nonce spoken in the prior connection (SessionManager JSONL reload) |
 | G — `?tts=0` URL override | client receives no `tts_chunk` **and** gateway log shows zero `IrodoriClient.synthesize:` lines |
 | H — inbound `tts_enabled:false` | same as G |
 
-Scenarios F (reconnect across a new WS) and I (default-on guard) are
-covered by the in-process regression suite only — reconnect needs a
-dedicated nanobot session-TTL harness.
+Scenario I (default-on guard) is covered by the in-process regression
+suite only; on live it is equivalent to A.
 
 ## Diagnostics
 
