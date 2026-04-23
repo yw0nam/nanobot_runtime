@@ -20,6 +20,9 @@ dev = [
     "pytest-httpx>=0.30",
 ]
 
+[tool.uv.sources]
+nanobot-ai = { git = "https://github.com/yw0nam/nanobot", branch = "develop" }
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
