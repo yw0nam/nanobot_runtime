@@ -24,6 +24,7 @@ are explicitly out of scope and can layer on later.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,8 @@ from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
 from pydantic import BaseModel, ValidationError
+from websockets.http11 import Request as WsRequest
+from websockets.http11 import Response
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -46,6 +49,15 @@ from nanobot_runtime.channels.desktop_mate_protocol import (
     StreamStartFrame,
     TTSChunkFrame,
     parse_inbound,
+)
+from nanobot_runtime.channels.desktop_mate_rest import (
+    bearer_token,
+    decode_api_key,
+    http_error,
+    http_json_response,
+    is_websocket_upgrade,
+    parse_request_path,
+    query_first,
 )
 from nanobot_runtime.hooks.tts import TTSChunk
 
@@ -200,10 +212,15 @@ class DesktopMateChannel(BaseChannel):
         bus: MessageBus,
         *,
         emotion_emojis: set[str] | None = None,
+        session_manager: Any | None = None,
     ) -> None:
         coerced = _coerce_config(config)
         super().__init__(coerced, bus)
         self.config: DesktopMateConfig = coerced
+        # Injected by the gateway's ChannelManager monkey-patch; used by the
+        # REST routes below. ``None`` is tolerated so unit tests can construct
+        # the channel in isolation — the routes 503 in that case.
+        self._session_manager = session_manager
         global _LATEST_CHANNEL
         _LATEST_CHANNEL = self
         # Emoji-stripping set: explicit kwarg (tests) wins, else load from
@@ -473,6 +490,99 @@ class DesktopMateChannel(BaseChannel):
             ),
         )
 
+    # -- REST surface ------------------------------------------------------
+
+    _SESSION_KEY_PREFIX = "desktop_mate:"
+
+    async def _dispatch_http(self, connection: Any, request: WsRequest) -> Any:
+        """Route an inbound HTTP request to a REST handler or fall through to WS.
+
+        Returning ``None`` lets the ``websockets`` library proceed with the
+        WebSocket handshake; returning a :class:`Response` short-circuits
+        with an HTTP reply.
+        """
+        got, _query = parse_request_path(request.path)
+
+        if got == "/api/sessions":
+            return self._handle_sessions_list(request)
+
+        m = re.match(r"^/api/sessions/([^/]+)/messages$", got)
+        if m:
+            return self._handle_session_messages(request, m.group(1))
+
+        # websockets' HTTP parser only supports GET, so delete is path-folded.
+        m = re.match(r"^/api/sessions/([^/]+)/delete$", got)
+        if m:
+            return self._handle_session_delete(request, m.group(1))
+
+        # Let the WS handshake path through.
+        expected_ws = self.config.path.rstrip("/") or "/"
+        if got == expected_ws and is_websocket_upgrade(request):
+            return None
+
+        return http_error(404, "Not Found")
+
+    def _check_rest_token(self, request: WsRequest) -> bool:
+        """Validate the REST request against the channel's static token.
+
+        Accepts ``Authorization: Bearer <token>`` header or ``?token=<token>``
+        query string. When no token is configured (dev / loopback), every
+        request is allowed — mirroring ``_authorize_token``.
+        """
+        expected = (self.config.token or "").strip()
+        if not expected:
+            return True
+        _, query = parse_request_path(request.path)
+        supplied = bearer_token(request.headers) or query_first(query, "token")
+        return supplied is not None and supplied == expected
+
+    def _is_desktop_mate_key(self, key: str) -> bool:
+        return key.startswith(self._SESSION_KEY_PREFIX)
+
+    def _handle_sessions_list(self, request: WsRequest) -> Response:
+        if not self._check_rest_token(request):
+            return http_error(401, "Unauthorized")
+        if self._session_manager is None:
+            return http_error(503, "session manager unavailable")
+        sessions = self._session_manager.list_sessions()
+        # Filter to our own channel's sessions and strip absolute paths —
+        # the FE doesn't need filesystem layout.
+        cleaned = [
+            {k: v for k, v in s.items() if k != "path"}
+            for s in sessions
+            if isinstance(s.get("key"), str)
+            and self._is_desktop_mate_key(s["key"])
+        ]
+        return http_json_response({"sessions": cleaned})
+
+    def _handle_session_messages(self, request: WsRequest, key: str) -> Response:
+        if not self._check_rest_token(request):
+            return http_error(401, "Unauthorized")
+        if self._session_manager is None:
+            return http_error(503, "session manager unavailable")
+        decoded = decode_api_key(key)
+        if decoded is None:
+            return http_error(400, "invalid session key")
+        if not self._is_desktop_mate_key(decoded):
+            return http_error(404, "session not found")
+        data = self._session_manager.read_session_file(decoded)
+        if data is None:
+            return http_error(404, "session not found")
+        return http_json_response(data)
+
+    def _handle_session_delete(self, request: WsRequest, key: str) -> Response:
+        if not self._check_rest_token(request):
+            return http_error(401, "Unauthorized")
+        if self._session_manager is None:
+            return http_error(503, "session manager unavailable")
+        decoded = decode_api_key(key)
+        if decoded is None:
+            return http_error(400, "invalid session key")
+        if not self._is_desktop_mate_key(decoded):
+            return http_error(404, "session not found")
+        deleted = self._session_manager.delete_session(decoded)
+        return http_json_response({"deleted": bool(deleted)})
+
     # -- Auth / handshake --------------------------------------------------
 
     def _authorize_token(self, supplied: str | None) -> bool:
@@ -605,11 +715,15 @@ class DesktopMateChannel(BaseChannel):
             self.config.path,
         )
 
+        async def process_request(connection: Any, request: WsRequest) -> Any:
+            return await self._dispatch_http(connection, request)
+
         async def runner() -> None:
             async with serve(
                 handler,
                 self.config.host,
                 self.config.port,
+                process_request=process_request,
                 ping_interval=self.config.ping_interval_s,
                 ping_timeout=self.config.ping_timeout_s,
                 max_size=self.config.max_message_bytes,

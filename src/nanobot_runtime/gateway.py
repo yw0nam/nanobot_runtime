@@ -10,6 +10,7 @@ Pinned to nanobot 0.1.5.x — version drift fails loud at startup.
 """
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Any, Callable
 
@@ -17,6 +18,7 @@ import nanobot
 from loguru import logger
 from nanobot.agent.hook import AgentHook
 from nanobot.agent.loop import AgentLoop
+from nanobot.channels.manager import ChannelManager
 
 _SUPPORTED_PREFIXES = ("0.1.5",)
 
@@ -46,6 +48,67 @@ def _install_monkey_patch(hooks_factory: HooksFactory) -> None:
     AgentLoop.__init__ = _patched_init  # type: ignore[assignment]
 
 
+def _install_channel_manager_patch() -> None:
+    """Generalize ChannelManager's ``session_manager`` injection.
+
+    Upstream only forwards ``session_manager`` to the built-in ``websocket``
+    channel (``nanobot/channels/manager.py`` gates on ``cls.name == "websocket"``).
+    We need the same dependency on ``desktop_mate`` for its REST surface.
+
+    Rather than duplicate 25 lines of ``_init_channels``, we wrap it: before
+    each class instantiation, inspect the constructor signature and, when it
+    declares a ``session_manager`` parameter, inject our stored reference.
+    This makes the fix generic for any future channel and trivially
+    compatible with the upstream guard (we set the kwarg before upstream's
+    conditional runs).
+    """
+    _orig_init_channels = ChannelManager._init_channels
+
+    def _patched_init_channels(self: ChannelManager) -> None:
+        from nanobot.channels.registry import discover_all
+
+        sm = getattr(self, "_session_manager", None)
+        if sm is None:
+            _orig_init_channels(self)
+            return
+
+        # Temporarily wrap each discovered channel's ``__init__`` to default-
+        # inject ``session_manager`` when the signature accepts it. Upstream's
+        # guard only fires for ``cls.name == "websocket"`` — this expands it
+        # to any channel that declares the kwarg (e.g. ``desktop_mate``).
+        # Restored after the original ``_init_channels`` returns.
+        patched: list[tuple[type, Any]] = []
+        try:
+            for cls in discover_all().values():
+                try:
+                    sig = inspect.signature(cls.__init__)
+                except (TypeError, ValueError):
+                    continue
+                if "session_manager" not in sig.parameters:
+                    continue
+                orig_cls_init = cls.__init__
+
+                def _make_wrapper(orig: Any) -> Any:
+                    def _wrapped(inst: Any, *a: Any, **kw: Any) -> None:
+                        kw.setdefault("session_manager", sm)
+                        orig(inst, *a, **kw)
+
+                    return _wrapped
+
+                cls.__init__ = _make_wrapper(orig_cls_init)  # type: ignore[method-assign]
+                patched.append((cls, orig_cls_init))
+            _orig_init_channels(self)
+        finally:
+            for cls, orig in patched:
+                cls.__init__ = orig  # type: ignore[method-assign]
+
+    ChannelManager._init_channels = _patched_init_channels  # type: ignore[assignment]
+    logger.debug(
+        "nanobot_runtime: patched ChannelManager._init_channels for "
+        "generic session_manager injection"
+    )
+
+
 def run(
     *,
     hooks_factory: HooksFactory,
@@ -58,6 +121,7 @@ def run(
     ``NANOBOT_WORKSPACE`` env vars, then to ``./nanobot.json`` / ``.``.
     """
     _install_monkey_patch(hooks_factory)
+    _install_channel_manager_patch()
 
     # Import after patch so any import-time side effects see the patched class.
     from nanobot.cli.commands import app
