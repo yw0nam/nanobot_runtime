@@ -269,17 +269,36 @@ def install_idle_system_job(
         payload=CronPayload(kind="system_event"),
     )
 
-    previous_on_job = cron.on_job
+    # Wrap ``_execute_job`` rather than ``on_job`` because nanobot's own
+    # gateway startup assigns ``cron.on_job = on_cron_job`` AFTER AgentLoop
+    # construction (where hooks_factory runs), which would clobber a
+    # composite installed at ``on_job`` level. ``_execute_job`` is called
+    # from the timer tick and is not reassigned by upstream, so this
+    # injection point is durable across the ``on_job`` reassignment.
+    orig_execute_job = cron._execute_job
 
-    async def composite(job: Any) -> Any:
-        if getattr(job, "id", None) == IDLE_SYSTEM_JOB_ID:
+    async def _patched_execute_job(target_job: Any) -> None:
+        if getattr(target_job, "id", None) != IDLE_SYSTEM_JOB_ID:
+            await orig_execute_job(target_job)
+            return
+
+        # Swap ``on_job`` for the scanner dispatch only while the idle
+        # tick runs so the original ``_execute_job`` logic (run-history,
+        # status bookkeeping) still applies. Restore immediately so the
+        # reassigned ``on_cron_job`` handler remains intact for all other
+        # jobs (dream, user reminders, …).
+        saved_on_job = cron.on_job
+
+        async def _scanner_dispatch(_j: Any) -> None:
             await scanner.scan_and_nudge()
-            return None
-        if previous_on_job is not None:
-            return await previous_on_job(job)
-        return None
 
-    cron.on_job = composite
+        cron.on_job = _scanner_dispatch
+        try:
+            await orig_execute_job(target_job)
+        finally:
+            cron.on_job = saved_on_job
+
+    cron._execute_job = _patched_execute_job
     cron.register_system_job(job)
     logger.info(
         "Idle watcher installed (timeout={}s cooldown={}s scan={}s channels={})",

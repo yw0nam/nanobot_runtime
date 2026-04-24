@@ -378,11 +378,13 @@ async def test_process_direct_exception_swallowed_and_cooldown_preserved() -> No
 # ---------- install_idle_system_job wiring tests ------------------------------
 
 
-async def test_install_registers_system_job_and_wraps_on_job() -> None:
+async def test_install_registers_system_job_and_wraps_execute_job() -> None:
     agent = _build_agent()
     sessions = _build_sessions([])
     cron = MagicMock()
     cron.on_job = None
+    original_execute = AsyncMock()
+    cron._execute_job = original_execute
 
     install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg())
 
@@ -392,25 +394,30 @@ async def test_install_registers_system_job_and_wraps_on_job() -> None:
     assert registered.schedule.kind == "every"
     assert registered.schedule.every_ms == 30_000
     assert registered.payload.kind == "system_event"
-    assert cron.on_job is not None
+    # _execute_job must be replaced on the instance.
+    assert cron._execute_job is not original_execute
 
 
-async def test_install_composite_delegates_non_idle_jobs() -> None:
-    """Existing cron.on_job must still run for jobs other than 'idle-watcher'."""
+async def test_install_execute_wrapper_delegates_non_idle_jobs_unchanged() -> None:
+    """Non-idle jobs go straight through to the original _execute_job, and
+    ``cron.on_job`` (nanobot's own handler) is NOT touched — otherwise
+    nanobot's cron → agent-loop dispatch breaks."""
     agent = _build_agent()
     sessions = _build_sessions([])
     cron = MagicMock()
-    original = AsyncMock(return_value="from-original")
-    cron.on_job = original
+    on_job_sentinel = AsyncMock()
+    cron.on_job = on_job_sentinel
+    original_execute = AsyncMock()
+    cron._execute_job = original_execute
 
     install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg())
-    composite = cron.on_job
+    wrapped = cron._execute_job
 
     other_job = SimpleNamespace(id="some-user-job", name="reminder")
-    result = await composite(other_job)
+    await wrapped(other_job)
 
-    original.assert_awaited_once_with(other_job)
-    assert result == "from-original"
+    original_execute.assert_awaited_once_with(other_job)
+    assert cron.on_job is on_job_sentinel  # never swapped for non-idle jobs
 
 
 async def test_install_disabled_config_is_noop() -> None:
@@ -419,11 +426,14 @@ async def test_install_disabled_config_is_noop() -> None:
     cron = MagicMock()
     sentinel = AsyncMock()
     cron.on_job = sentinel
+    original_execute = AsyncMock()
+    cron._execute_job = original_execute
 
     install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg(enabled=False))
 
     cron.register_system_job.assert_not_called()
     assert cron.on_job is sentinel  # untouched
+    assert cron._execute_job is original_execute  # untouched
 
 
 async def test_install_disabled_config_disables_persisted_job() -> None:
@@ -452,7 +462,8 @@ async def test_install_disabled_config_survives_enable_job_exception() -> None:
 
 
 async def test_install_idle_job_invokes_scanner() -> None:
-    """When composite receives the idle job id, it must trigger scan_and_nudge."""
+    """When the patched _execute_job receives the idle job id, it must
+    trigger scan_and_nudge via the original _execute_job's on_job dispatch."""
     now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
     agent = _build_agent()
     sessions = _build_sessions(
@@ -462,11 +473,21 @@ async def test_install_idle_job_invokes_scanner() -> None:
     cron = MagicMock()
     cron.on_job = None
 
+    # Simulate the real _execute_job contract: it calls self.on_job(job).
+    async def fake_execute_job(job):
+        if cron.on_job is not None:
+            await cron.on_job(job)
+
+    cron._execute_job = fake_execute_job
+
     install_idle_system_job(
         agent=agent, sessions=sessions, cron=cron, config=_cfg(), clock=lambda: now
     )
-    composite = cron.on_job
+    wrapped = cron._execute_job
     idle_job = SimpleNamespace(id=IDLE_SYSTEM_JOB_ID, name="idle-watcher")
-    await composite(idle_job)
+    await wrapped(idle_job)
 
     agent.process_direct.assert_awaited_once()
+    # on_job must be restored after the idle dispatch (important: nanobot's
+    # own on_cron_job still needs to handle dream/reminder jobs later).
+    assert cron.on_job is None
