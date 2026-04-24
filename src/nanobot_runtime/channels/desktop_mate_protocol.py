@@ -17,10 +17,12 @@ serialised as explicit ``null`` because the frontend treats ``null`` as
 "TTS unavailable, play silence" — dropping the key would change semantics.
 
 Image intake (issue #8): inbound frames may carry an ``images`` field
-(a list of ``data:<mime>;base64,<payload>`` URLs, max
-:data:`_MAX_IMAGES_PER_MESSAGE` entries). Per-image byte/MIME validation
-happens at the channel layer, which surfaces :class:`ImageRejectedFrame`
-to the client on failure.
+(a list of ``data:<mime>;base64,<payload>`` URLs). All validation — count,
+MIME, size, base64 well-formedness, disk-write success — happens at the
+channel layer so every failure mode surfaces to the client as an
+:class:`ImageRejectedFrame` with a stable reason token (count caps in
+particular must not fail at the Pydantic boundary, because a schema
+ValidationError would be silently dropped by the inbound loop).
 """
 from __future__ import annotations
 
@@ -92,20 +94,42 @@ class StreamEndFrame(_OutboundBase):
     content: str
 
 
+ImageRejectReason = Literal[
+    "malformed",
+    "too_large",
+    "unsupported_mime",
+    "too_many",
+    "io_error",
+]
+
+
 class ImageRejectedFrame(BaseModel):
     """Sent when the channel refuses to accept a turn's ``images`` payload.
 
-    Carries a short, stable ``reason`` token (``"malformed"``,
-    ``"too_large"``, ``"unsupported_mime"``, ``"too_many"``) so the FE can
-    render a localized message without parsing free-form prose. The whole
-    turn is rejected — the agent loop is never entered.
+    The ``reason`` field is a closed set so the FE can branch on it without
+    parsing free-form prose:
+
+    * ``"malformed"`` — the data URL couldn't be parsed / decoded;
+    * ``"too_large"`` — decoded payload exceeded the per-image byte cap;
+    * ``"unsupported_mime"`` — MIME not in the channel's allow-list;
+    * ``"too_many"`` — more than :data:`_MAX_IMAGES_PER_MESSAGE` entries
+      on a single frame;
+    * ``"io_error"`` — server-side failure persisting the decoded image
+      (disk full, permission error, etc.). Unlike the other reasons this
+      is not the caller's fault; the FE should surface it as a retryable
+      transient error, not an input-validation message.
+
+    ``reference_id`` echoes the inbound envelope's field (when present) so
+    the FE can correlate the rejection with a specific in-flight send even
+    when ``chat_id`` is absent (new_chat rejections have no chat yet).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event: Literal["image_rejected"] = "image_rejected"
     chat_id: str | None = None
-    reason: str
+    reason: ImageRejectReason
+    reference_id: str | None = None
 
 
 class TTSChunkFrame(_OutboundBase):
@@ -147,13 +171,12 @@ class _InboundBase(BaseModel):
     tts_enabled: bool = True
     reference_id: str | None = None
     # Inbound image attachments as ``data:<mime>;base64,<payload>`` URLs.
-    # Per-item byte/MIME validation happens at the channel layer — see
-    # ``DesktopMateChannel._decode_inbound_images``. Only the per-frame
-    # count cap is enforced here so malformed frames fail fast.
-    images: list[str] | None = Field(
-        default=None,
-        max_length=_MAX_IMAGES_PER_MESSAGE,
-    )
+    # All validation (count, MIME, size, decode) happens at the channel
+    # layer — see ``DesktopMateChannel._decode_inbound_images``. The count
+    # cap is intentionally NOT enforced here: a Pydantic ValidationError
+    # would be caught by the inbound loop's generic handler and silently
+    # dropped, so the FE would never learn why its message vanished.
+    images: list[str] | None = None
 
     @model_validator(mode="after")
     def _content_or_images_required(self) -> "_InboundBase":
