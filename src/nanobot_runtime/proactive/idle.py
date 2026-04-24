@@ -48,7 +48,12 @@ class QuietHours:
 
 @dataclass
 class IdleConfig:
-    enabled: bool = True
+    # Default off: the scanner currently produces a response via
+    # ``agent.process_direct`` but never publishes it through
+    # ``MessageBus.publish_outbound``, so unsolicited nudges never reach
+    # the FE channel. See the follow-up issue on the scanner-side
+    # outbound-delivery gap before flipping this on.
+    enabled: bool = False
     idle_timeout_s: int = 300
     cooldown_s: int = 900
     scan_interval_s: int = 30
