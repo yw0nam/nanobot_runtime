@@ -125,6 +125,12 @@ curl -X POST http://127.0.0.1:<gateway-port>/api/sessions/<channel>%3A<chat_id>/
 
 세션 키 포맷: `channel:chat_id` (URL 인코딩 시 `%3A`).
 
+nanobot 내장 `websocket` 채널과 `DesktopMateChannel` 모두 동일한 3개 라우트를
+노출한다 (DesktopMate 쪽은 `src/nanobot_runtime/channels/desktop_mate_rest.py`
+에서 mirror 구현, 전체 키의 `desktop_mate:` prefix 로 자기 세션만 필터링).
+인증은 두 채널 모두 `?token=<>` 쿼리 파라미터 또는 `Authorization: Bearer <>`
+헤더를 재사용한다.
+
 ---
 
 ## 4. 확장
