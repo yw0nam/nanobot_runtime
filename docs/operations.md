@@ -125,6 +125,32 @@ curl -X POST http://127.0.0.1:<gateway-port>/api/sessions/<channel>%3A<chat_id>/
 
 세션 키 포맷: `channel:chat_id` (URL 인코딩 시 `%3A`).
 
+### 이미지 첨부 (inbound `images`)
+
+`new_chat` / `message` 프레임에 `images: list[str]` 필드를 실어 멀티모달
+입력을 보낼 수 있다. 각 항목은 반드시 `data:<mime>;base64,<payload>`
+형식의 data URL (원시 base64 문자열 불가). 캡: 프레임당 최대 4장,
+장당 디코드 후 10MB. 허용 MIME 은 `image/png`, `image/jpeg`,
+`image/webp`, `image/gif` — SVG 는 XSS 리스크로 차단된다. 검증 실패 시
+채널은 turn 전체를 거부하고 `{"event": "image_rejected", "reason":
+<reason>, "reference_id": <echo>}` 프레임을 돌려준다. `reason` 은 다음
+다섯 토큰 중 하나로 고정된다:
+
+- `malformed` — data URL 파싱 실패 / base64 복호 실패 (caller-fixable)
+- `too_large` — 디코드 후 장당 10MB 초과
+- `unsupported_mime` — allow-list 외 MIME (SVG 포함)
+- `too_many` — 한 프레임에 4장 초과 동봉
+- `io_error` — 서버 측 저장 실패 (디스크 풀, 권한). 사용자 입력 문제가
+  아니므로 FE 는 일시적 오류로 취급해 재시도를 권장한다.
+
+`reference_id` 는 인바운드 envelope 의 필드를 그대로 에코하므로, FE 는
+`new_chat` 거부 (아직 `chat_id` 미할당) 경우에도 어떤 in-flight send 에
+대한 거부인지 매칭할 수 있다. 디코드된 파일은 nanobot 의
+`get_media_dir("desktop_mate")` 아래에 저장되고, 로컬 경로가
+`BaseChannel._handle_message(..., media=...)` 로 전달되어 이후 멀티모달
+변환은 nanobot 측이 자동 처리한다. 다운스트림 전달 도중 예외가 나면
+채널이 디코드된 미디어를 unlink 하므로 rejected turn 의 파일이 디스크에
+잔류하지 않는다.
 nanobot 내장 `websocket` 채널과 `DesktopMateChannel` 모두 동일한 3개 라우트를
 노출한다 (DesktopMate 쪽은 `src/nanobot_runtime/channels/desktop_mate_rest.py`
 에서 mirror 구현, 전체 키의 `desktop_mate:` prefix 로 자기 세션만 필터링).

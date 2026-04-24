@@ -24,10 +24,12 @@ are explicitly out of scope and can layer on later.
 from __future__ import annotations
 
 import asyncio
+import binascii
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -39,15 +41,19 @@ from websockets.http11 import Response
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.utils.media_decode import FileSizeExceeded, save_base64_data_url
 
 from nanobot_runtime.channels.desktop_mate_protocol import (
     DeltaFrame,
+    ImageRejectedFrame,
+    ImageRejectReason,
     MessageFrame,
     NewChatFrame,
     ReadyFrame,
     StreamEndFrame,
     StreamStartFrame,
     TTSChunkFrame,
+    _MAX_IMAGES_PER_MESSAGE,
     parse_inbound,
 )
 from nanobot_runtime.channels.desktop_mate_rest import (
@@ -88,9 +94,11 @@ class DesktopMateConfig:
     # WS protocol-level keepalive (seconds). Set to None to disable.
     ping_interval_s: float | None = 20.0
     ping_timeout_s: float | None = 20.0
-    # Max inbound frame size in bytes. 6MB accommodates the DMP image cap
-    # (~4.5MB binary ≈ ~6MB base64).
-    max_message_bytes: int = 6 * 1024 * 1024
+    # Max inbound frame size in bytes.  Must be large enough to fit the
+    # worst-case image payload: _MAX_IMAGES_PER_MESSAGE (4) × _MAX_IMAGE_BYTES
+    # (10 MB) base64-encoded (×4/3) ≈ 53 MB.  60 MB gives headroom for JSON
+    # framing and future cap adjustments.
+    max_message_bytes: int = 60 * 1024 * 1024
     # Path to the YAML file whose ``emotion_motion_map`` keys enumerate the
     # emojis the channel should strip from outbound ``delta`` text. Same file
     # the TTSHook loads for keyframe mapping — kept in sync naturally.
@@ -108,6 +116,28 @@ _CAMEL_TO_SNAKE: dict[str, str] = {
     "maxMessageBytes": "max_message_bytes",
     "emotionMapPath": "emotion_map_path",
 }
+
+
+# Per-image ingress caps (issue #8). Matches upstream nanobot's built-in
+# WS channel intent: 10 MB per image is the user-facing ceiling, SVG is
+# excluded to avoid embedded-script XSS surface.
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_IMAGE_MIME_ALLOWED: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+})
+_DATA_URL_MIME_RE = re.compile(r"^data:([^;]+);base64,", re.DOTALL)
+
+
+def _extract_data_url_mime(url: str) -> str | None:
+    if not isinstance(url, str):
+        return None
+    m = _DATA_URL_MIME_RE.match(url)
+    if not m:
+        return None
+    return m.group(1).strip().lower() or None
 
 
 def _load_emotion_emojis_from_yaml(path: str) -> set[str]:
@@ -253,6 +283,13 @@ class DesktopMateChannel(BaseChannel):
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
         self._server: Any | None = None
+        # Per-image byte cap — exposed as an instance attr so tests can
+        # dial it down without base64-encoding 10 MB of padding per case.
+        self._max_image_bytes: int = _MAX_IMAGE_BYTES
+        # Media directory for decoded inbound images. Resolved lazily via
+        # :meth:`_resolve_media_dir` so tests can override by assigning
+        # ``channel._media_dir`` before triggering the inbound loop.
+        self._media_dir: Path | None = None
 
     # -- Subscription bookkeeping ------------------------------------------
 
@@ -271,6 +308,111 @@ class DesktopMateChannel(BaseChannel):
                 self._streams.pop(sid, None)
                 if self._current_stream_id == sid:
                     self._current_stream_id = None
+
+    # -- Image intake ------------------------------------------------------
+
+    def _resolve_media_dir(self) -> Path:
+        """Return the directory inbound images are persisted to.
+
+        Uses nanobot's ``get_media_dir("desktop_mate")`` so the FS layout
+        matches the built-in WS channel. Lazy-evaluated so construction
+        order (channel-first vs config-first) doesn't matter.
+        """
+        if self._media_dir is not None:
+            return self._media_dir
+        from nanobot.config.paths import get_media_dir
+
+        resolved = get_media_dir("desktop_mate")
+        self._media_dir = resolved
+        return resolved
+
+    def _decode_inbound_images(
+        self,
+        images: list[str] | None,
+        *,
+        sender_id: str,
+    ) -> tuple[list[str], ImageRejectReason | None]:
+        """Decode a frame's ``images`` entries to disk.
+
+        Returns ``(paths, None)`` on success or ``([], reason)`` on the
+        first failure (whole turn rejected — no partial ingress). Every
+        rejection is logged with ``sender_id`` + mime + size so MIME
+        violations (a potential XSS / XXE surface) and server-side IO
+        failures are observable to ops. ``ImageRejectReason`` is the
+        closed set documented on :class:`ImageRejectedFrame`.
+        """
+        if not images:
+            return [], None
+
+        if len(images) > _MAX_IMAGES_PER_MESSAGE:
+            logger.warning(
+                "desktop_mate: rejecting inbound images from {}: "
+                "count={} exceeds cap={} (reason=too_many)",
+                sender_id, len(images), _MAX_IMAGES_PER_MESSAGE,
+            )
+            return [], "too_many"
+
+        media_dir = self._resolve_media_dir()
+        saved_paths: list[str] = []
+
+        def _abort(
+            reason: ImageRejectReason,
+            *,
+            mime: str | None = None,
+            size_hint: int | None = None,
+        ) -> tuple[list[str], ImageRejectReason]:
+            # io_error is a server-side failure (disk full, permission,
+            # media dir gone); everything else is caller-fixable.
+            level = "error" if reason == "io_error" else "warning"
+            getattr(logger, level)(
+                "desktop_mate: rejecting inbound image from {}: "
+                "reason={} mime={} size_hint={}",
+                sender_id, reason, mime, size_hint,
+            )
+            # Any image already written before a later entry fails must be
+            # unlinked — partial state on disk confuses downstream cleanup.
+            for p in saved_paths:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "desktop_mate: failed to unlink partial media {}: {}",
+                        p, exc,
+                    )
+            return [], reason
+
+        for entry in images:
+            if not isinstance(entry, str) or not entry:
+                return _abort("malformed")
+            mime = _extract_data_url_mime(entry)
+            if mime is None:
+                return _abort("malformed")
+            if mime not in _IMAGE_MIME_ALLOWED:
+                return _abort("unsupported_mime", mime=mime)
+            try:
+                saved = save_base64_data_url(
+                    entry, media_dir, max_bytes=self._max_image_bytes,
+                )
+            except FileSizeExceeded:
+                return _abort("too_large", mime=mime, size_hint=len(entry))
+            except (binascii.Error, ValueError) as exc:
+                # Malformed base64 / bad data URL payload. Caller-fixable.
+                logger.debug(
+                    "desktop_mate: decode failed (caller-fixable): {}", exc
+                )
+                return _abort("malformed", mime=mime, size_hint=len(entry))
+            except OSError as exc:
+                # Disk write failure (full FS, permission, missing dir).
+                # Server-side problem — surface as io_error so FE can
+                # retry rather than blame the user's image.
+                logger.opt(exception=True).error(
+                    "desktop_mate: image persist failed: {}", exc
+                )
+                return _abort("io_error", mime=mime, size_hint=len(entry))
+            if saved is None:
+                return _abort("malformed", mime=mime, size_hint=len(entry))
+            saved_paths.append(saved)
+        return saved_paths, None
 
     # -- TTS policy --------------------------------------------------------
 
@@ -651,16 +793,55 @@ class DesktopMateChannel(BaseChannel):
                 assert isinstance(envelope, MessageFrame)
                 chat_id = envelope.chat_id
 
+            media_paths, reject_reason = self._decode_inbound_images(
+                envelope.images, sender_id=sender_id,
+            )
+            if reject_reason is not None:
+                # new_chat rejections carry no chat_id — the session was
+                # never created. FE correlates via ``reference_id`` instead
+                # when it needs to match the rejection to its pending send.
+                await self._send_frame(
+                    connection,
+                    ImageRejectedFrame(
+                        chat_id=chat_id if isinstance(envelope, MessageFrame)
+                        else None,
+                        reason=reject_reason,
+                        reference_id=envelope.reference_id,
+                    ),
+                )
+                continue
+
             self._attach(chat_id, connection)
             # Record per-chat TTS policy from the inbound flag. Connection
             # URL override (``?tts=0``) still wins in ``_tts_enabled_for_chat``.
             self._tts_enabled_per_chat[chat_id] = bool(envelope.tts_enabled)
-            await self._handle_message(
-                sender_id=sender_id,
-                chat_id=chat_id,
-                content=envelope.content,
-                metadata=base_metadata,
-            )
+            # Hand-off to the bus. If this raises (or the allow_from check
+            # inside silently rejects), decoded image files would leak on
+            # disk; unlink them on any non-happy exit. We don't propagate
+            # the exception — the connection should keep serving further
+            # frames from the same client.
+            try:
+                await self._handle_message(
+                    sender_id=sender_id,
+                    chat_id=chat_id,
+                    content=envelope.content,
+                    media=media_paths or None,
+                    metadata=base_metadata,
+                )
+            except Exception as exc:
+                logger.opt(exception=True).error(
+                    "desktop_mate: handle_message failed (chat_id={}): {}",
+                    chat_id, exc,
+                )
+                for p in media_paths:
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except OSError as unlink_exc:
+                        logger.warning(
+                            "desktop_mate: leaked media {} "
+                            "(unlink after handle_message failure): {}",
+                            p, unlink_exc,
+                        )
 
     # -- Server lifecycle --------------------------------------------------
 
