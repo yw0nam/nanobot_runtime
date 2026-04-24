@@ -94,9 +94,11 @@ class DesktopMateConfig:
     # WS protocol-level keepalive (seconds). Set to None to disable.
     ping_interval_s: float | None = 20.0
     ping_timeout_s: float | None = 20.0
-    # Max inbound frame size in bytes. 6MB accommodates the DMP image cap
-    # (~4.5MB binary ≈ ~6MB base64).
-    max_message_bytes: int = 6 * 1024 * 1024
+    # Max inbound frame size in bytes.  Must be large enough to fit the
+    # worst-case image payload: _MAX_IMAGES_PER_MESSAGE (4) × _MAX_IMAGE_BYTES
+    # (10 MB) base64-encoded (×4/3) ≈ 53 MB.  60 MB gives headroom for JSON
+    # framing and future cap adjustments.
+    max_message_bytes: int = 60 * 1024 * 1024
     # Path to the YAML file whose ``emotion_motion_map`` keys enumerate the
     # emojis the channel should strip from outbound ``delta`` text. Same file
     # the TTSHook loads for keyframe mapping — kept in sync naturally.
