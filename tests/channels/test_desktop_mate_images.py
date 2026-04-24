@@ -144,15 +144,23 @@ def test_inbound_images_defaults_to_none() -> None:
     assert env.images is None
 
 
-def test_inbound_images_rejects_too_many() -> None:
+def test_inbound_images_schema_does_not_cap_count() -> None:
+    """Count enforcement lives at the channel layer, not Pydantic.
+
+    A Pydantic ``max_length`` would raise ``ValidationError`` at parse
+    time and be silently dropped by the inbound loop — the FE would never
+    learn the turn was rejected. Regression: make sure nobody reintroduces
+    a schema-level cap.
+    """
     raw = json.dumps({
         "type": "message",
         "chat_id": "c-1",
         "content": "hi",
         "images": [TINY_PNG_DATA_URL] * 5,
     })
-    with pytest.raises(ValidationError):
-        parse_inbound(raw)
+    env = parse_inbound(raw)
+    assert isinstance(env, MessageFrame)
+    assert env.images is not None and len(env.images) == 5
 
 
 def test_inbound_images_rejects_wrong_item_type() -> None:
@@ -328,3 +336,177 @@ async def test_unsupported_mime_rejected(tmp_path: Path) -> None:
     frames = _decode_frames(conn)
     assert frames[-1]["event"] == "image_rejected"
     assert frames[-1]["reason"] == "unsupported_mime"
+
+
+async def test_too_many_images_emits_rejection_frame(tmp_path: Path) -> None:
+    """5 images ⇒ ``too_many`` rejection frame, not silent drop.
+
+    Guards against the dead-code regression where a Pydantic ``max_length``
+    would raise ``ValidationError`` pre-channel and be swallowed by the
+    inbound loop's generic handler — leaving FE without any rejection.
+    """
+    channel, bus = _make_channel(tmp_path)
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "see",
+            "images": [TINY_PNG_DATA_URL] * 5,
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    assert bus.inbound == []
+    frames = _decode_frames(conn)
+    assert frames[-1]["event"] == "image_rejected"
+    assert frames[-1]["reason"] == "too_many"
+    # Nothing should have been written to disk yet — the count check
+    # short-circuits before any decode work begins.
+    assert list((tmp_path / "media").iterdir()) == []
+
+
+async def test_partial_ingress_cleanup_on_later_failure(tmp_path: Path) -> None:
+    """First image succeeds, second exceeds cap ⇒ first file must be unlinked.
+
+    The channel promises whole-turn rejection with no partial state on
+    disk. Without explicit coverage a future refactor could silently drop
+    the ``_abort`` unlink loop and accumulate leaked bytes per rejection.
+    """
+    channel, bus = _make_channel(tmp_path)
+    channel._max_image_bytes = 32
+    oversized_payload = base64.b64encode(b"X" * 256).decode("ascii")
+    oversized_url = f"data:image/png;base64,{oversized_payload}"
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "see",
+            "images": [TINY_PNG_DATA_URL, oversized_url],
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    assert bus.inbound == []
+    frames = _decode_frames(conn)
+    assert frames[-1]["reason"] == "too_large"
+    # Crucial: the earlier-decoded tiny PNG must not be left behind.
+    media_dir = tmp_path / "media"
+    assert list(media_dir.iterdir()) == []
+
+
+async def test_io_error_during_persist_surfaces_as_io_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disk-write failures are ``io_error``, not ``malformed``.
+
+    Masking OSError as malformed misleads operators into debugging user
+    input when the actual fault is server-side (disk full, permission).
+    """
+    channel, bus = _make_channel(tmp_path)
+
+    def _raise_oserror(*args: Any, **kwargs: Any) -> str:
+        raise OSError("disk write failed (simulated)")
+
+    monkeypatch.setattr(
+        "nanobot_runtime.channels.desktop_mate.save_base64_data_url",
+        _raise_oserror,
+    )
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "see",
+            "images": [TINY_PNG_DATA_URL],
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    assert bus.inbound == []
+    frames = _decode_frames(conn)
+    assert frames[-1]["event"] == "image_rejected"
+    assert frames[-1]["reason"] == "io_error"
+
+
+async def test_reference_id_echoed_on_rejection(tmp_path: Path) -> None:
+    """FE needs ``reference_id`` to correlate rejections with pending sends.
+
+    Especially important for ``new_chat`` where ``chat_id`` is ``None`` on
+    rejection (session was never created) — without reference_id the FE
+    has no way to match the rejection to an in-flight request.
+    """
+    channel, bus = _make_channel(tmp_path)
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "new_chat",
+            "content": "see",
+            "reference_id": "req-42",
+            "images": [_TINY_PNG_B64],  # missing data: prefix => malformed
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    frames = _decode_frames(conn)
+    rejection = frames[-1]
+    assert rejection["event"] == "image_rejected"
+    assert rejection["reason"] == "malformed"
+    assert rejection["reference_id"] == "req-42"
+    assert rejection.get("chat_id") is None
+
+
+async def test_exact_boundary_four_images_accepted(tmp_path: Path) -> None:
+    """Inclusive count cap: exactly ``_MAX_IMAGES_PER_MESSAGE`` must pass.
+
+    Guards against an off-by-one flip (``>=`` vs ``>``) that the
+    over-cap test alone would not catch.
+    """
+    channel, bus = _make_channel(tmp_path)
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "see",
+            "images": [TINY_PNG_DATA_URL] * 4,
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    assert len(bus.inbound) == 1
+    assert len(bus.inbound[0].media) == 4
+    frames = _decode_frames(conn)
+    assert not any(f.get("event") == "image_rejected" for f in frames)
+
+
+async def test_decoded_media_unlinked_when_handle_message_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Downstream failure must not strand decoded images on disk.
+
+    ``BaseChannel._handle_message`` can raise (bus failure) or silently
+    drop (``is_allowed`` check returns False). Either way, files decoded
+    before the hand-off must be cleaned up so repeated failures don't
+    accumulate per-turn garbage.
+    """
+    channel, bus = _make_channel(tmp_path)
+
+    async def _raising_handle_message(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("bus publish failed (simulated)")
+
+    monkeypatch.setattr(channel, "_handle_message", _raising_handle_message)
+    conn = FakeConnection(inbox=[
+        json.dumps({
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "see",
+            "images": [TINY_PNG_DATA_URL],
+        }),
+    ])
+
+    await channel._connection_loop(conn, sender_id="user-1")
+
+    assert bus.inbound == []
+    assert list((tmp_path / "media").iterdir()) == []
