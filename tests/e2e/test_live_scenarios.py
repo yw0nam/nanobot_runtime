@@ -338,3 +338,44 @@ async def test_h_inbound_tts_enabled_false(gateway, live_client) -> None:
         f"IrodoriClient.synthesize() was called with tts_enabled=false "
         f"(baseline={baseline}, after={after})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario I — image intake (issue #8)
+# ---------------------------------------------------------------------------
+
+
+# 1x1 transparent PNG, inline so the suite has no fixture file dependency.
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO"
+    "+ip1sAAAAASUVORK5CYII="
+)
+
+
+async def test_i_inbound_image_reaches_multimodal_pipeline(gateway, live_client) -> None:
+    """Smoke: FE sends a ``data:image/png`` URL; gateway writes it to the
+    desktop_mate media dir and the agent loop drives a normal turn to
+    completion (stream_start → delta → stream_end).
+
+    We don't assert anything about provider payload shape here — the
+    in-process unit suite covers decode + forwarding deterministically;
+    the live flight is just the "end to end nothing blows up" gate.
+    """
+    client = await live_client(client_id="e2e-I")
+    await client.wait_for_event("ready", timeout=5.0)
+
+    await run_turn_and_drain(
+        client,
+        {
+            "type": "new_chat",
+            "content": "이 이미지를 한 문장으로 설명해 줘.",
+            "images": [_TINY_PNG_DATA_URL],
+            "tts_enabled": False,
+        },
+        drain_seconds=2.0,
+    )
+
+    events = client.events()
+    assert "image_rejected" not in events, events
+    assert "stream_start" in events and "stream_end" in events, events

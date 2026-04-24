@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from nanobot_runtime.channels.desktop_mate_protocol import (
     DeltaFrame,
+    ImageRejectedFrame,
     InboundEnvelope,
     MessageFrame,
     NewChatFrame,
@@ -247,6 +248,22 @@ def test_parse_inbound_rejects_empty_content():
 def test_parse_inbound_bad_json_raises():
     with pytest.raises((ValidationError, ValueError)):
         parse_inbound("not json{{")
+
+
+def test_image_rejected_frame_serialises_minimal():
+    frame = ImageRejectedFrame(reason="too_large")
+    payload = json.loads(frame.model_dump_json(exclude_none=True))
+    assert payload == {"event": "image_rejected", "reason": "too_large"}
+
+
+def test_image_rejected_frame_with_chat_id():
+    frame = ImageRejectedFrame(chat_id="chat-A", reason="malformed")
+    payload = json.loads(frame.model_dump_json(exclude_none=True))
+    assert payload == {
+        "event": "image_rejected",
+        "chat_id": "chat-A",
+        "reason": "malformed",
+    }
 
 
 def test_inbound_envelope_is_tagged_union():
