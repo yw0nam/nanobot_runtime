@@ -125,6 +125,19 @@ curl -X POST http://127.0.0.1:<gateway-port>/api/sessions/<channel>%3A<chat_id>/
 
 세션 키 포맷: `channel:chat_id` (URL 인코딩 시 `%3A`).
 
+### 이미지 첨부 (inbound `images`)
+
+`new_chat` / `message` 프레임에 `images: list[str]` 필드를 실어 멀티모달
+입력을 보낼 수 있다. 각 항목은 반드시 `data:<mime>;base64,<payload>`
+형식의 data URL (원시 base64 문자열 불가). 캡: 프레임당 최대 4장,
+장당 디코드 후 10MB. 허용 MIME 은 `image/png`, `image/jpeg`,
+`image/webp`, `image/gif` — SVG 는 XSS 리스크로 차단된다. 검증 실패 시
+채널은 turn 전체를 거부하고 `{"event": "image_rejected", "reason":
+"malformed" | "too_large" | "unsupported_mime"}` 프레임을 돌려준다.
+디코드된 파일은 nanobot 의 `get_media_dir("desktop_mate")` 아래에
+저장되고, 로컬 경로가 `BaseChannel._handle_message(..., media=...)` 로
+전달되어 이후 멀티모달 변환은 nanobot 측이 자동 처리한다.
+
 ---
 
 ## 4. 확장
