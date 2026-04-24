@@ -28,6 +28,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -39,9 +40,11 @@ from websockets.http11 import Response
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.utils.media_decode import FileSizeExceeded, save_base64_data_url
 
 from nanobot_runtime.channels.desktop_mate_protocol import (
     DeltaFrame,
+    ImageRejectedFrame,
     MessageFrame,
     NewChatFrame,
     ReadyFrame,
@@ -108,6 +111,28 @@ _CAMEL_TO_SNAKE: dict[str, str] = {
     "maxMessageBytes": "max_message_bytes",
     "emotionMapPath": "emotion_map_path",
 }
+
+
+# Per-image ingress caps (issue #8). Matches upstream nanobot's built-in
+# WS channel intent: 10 MB per image is the user-facing ceiling, SVG is
+# excluded to avoid embedded-script XSS surface.
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_IMAGE_MIME_ALLOWED: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+})
+_DATA_URL_MIME_RE = re.compile(r"^data:([^;]+);base64,", re.DOTALL)
+
+
+def _extract_data_url_mime(url: str) -> str | None:
+    if not isinstance(url, str):
+        return None
+    m = _DATA_URL_MIME_RE.match(url)
+    if not m:
+        return None
+    return m.group(1).strip().lower() or None
 
 
 def _load_emotion_emojis_from_yaml(path: str) -> set[str]:
@@ -253,6 +278,13 @@ class DesktopMateChannel(BaseChannel):
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
         self._server: Any | None = None
+        # Per-image byte cap — exposed as an instance attr so tests can
+        # dial it down without base64-encoding 10 MB of padding per case.
+        self._max_image_bytes: int = _MAX_IMAGE_BYTES
+        # Media directory for decoded inbound images. Resolved lazily via
+        # :meth:`_resolve_media_dir` so tests can override by assigning
+        # ``channel._media_dir`` before triggering the inbound loop.
+        self._media_dir: Path | None = None
 
     # -- Subscription bookkeeping ------------------------------------------
 
@@ -271,6 +303,75 @@ class DesktopMateChannel(BaseChannel):
                 self._streams.pop(sid, None)
                 if self._current_stream_id == sid:
                     self._current_stream_id = None
+
+    # -- Image intake ------------------------------------------------------
+
+    def _resolve_media_dir(self) -> Path:
+        """Return the directory inbound images are persisted to.
+
+        Uses nanobot's ``get_media_dir("desktop_mate")`` so the FS layout
+        matches the built-in WS channel. Lazy-evaluated so construction
+        order (channel-first vs config-first) doesn't matter.
+        """
+        if self._media_dir is not None:
+            return self._media_dir
+        from nanobot.config.paths import get_media_dir
+
+        resolved = get_media_dir("desktop_mate")
+        self._media_dir = resolved
+        return resolved
+
+    def _decode_inbound_images(
+        self, images: list[str] | None
+    ) -> tuple[list[str], str | None]:
+        """Decode a frame's ``images`` entries to disk.
+
+        Returns ``(paths, None)`` on success or ``([], reason)`` on the
+        first failure (whole turn rejected — no partial ingress). Reason
+        tokens are stable: ``"malformed"``, ``"too_large"``,
+        ``"unsupported_mime"``.
+        """
+        if not images:
+            return [], None
+        media_dir = self._resolve_media_dir()
+        saved_paths: list[str] = []
+
+        def _abort(reason: str) -> tuple[list[str], str]:
+            # Any image already written before a later entry fails must be
+            # unlinked — partial state on disk confuses downstream cleanup.
+            for p in saved_paths:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "desktop_mate: failed to unlink partial media {}: {}",
+                        p, exc,
+                    )
+            return [], reason
+
+        for entry in images:
+            if not isinstance(entry, str) or not entry:
+                return _abort("malformed")
+            mime = _extract_data_url_mime(entry)
+            if mime is None:
+                return _abort("malformed")
+            if mime not in _IMAGE_MIME_ALLOWED:
+                return _abort("unsupported_mime")
+            try:
+                saved = save_base64_data_url(
+                    entry, media_dir, max_bytes=self._max_image_bytes,
+                )
+            except FileSizeExceeded:
+                return _abort("too_large")
+            except Exception:
+                logger.opt(exception=True).warning(
+                    "desktop_mate: image decode failed"
+                )
+                return _abort("malformed")
+            if saved is None:
+                return _abort("malformed")
+            saved_paths.append(saved)
+        return saved_paths, None
 
     # -- TTS policy --------------------------------------------------------
 
@@ -651,6 +752,20 @@ class DesktopMateChannel(BaseChannel):
                 assert isinstance(envelope, MessageFrame)
                 chat_id = envelope.chat_id
 
+            media_paths, reject_reason = self._decode_inbound_images(
+                envelope.images
+            )
+            if reject_reason is not None:
+                await self._send_frame(
+                    connection,
+                    ImageRejectedFrame(
+                        chat_id=chat_id if isinstance(envelope, MessageFrame)
+                        else None,
+                        reason=reject_reason,
+                    ),
+                )
+                continue
+
             self._attach(chat_id, connection)
             # Record per-chat TTS policy from the inbound flag. Connection
             # URL override (``?tts=0``) still wins in ``_tts_enabled_for_chat``.
@@ -659,6 +774,7 @@ class DesktopMateChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=chat_id,
                 content=envelope.content,
+                media=media_paths or None,
                 metadata=base_metadata,
             )
 
