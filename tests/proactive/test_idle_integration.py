@@ -51,6 +51,8 @@ async def test_real_cron_fires_scanner_and_nudges_idle_session(tmp_path) -> None
                 idle_timeout_s=300,
                 cooldown_s=900,
                 scan_interval_s=1,
+                startup_grace_s=0,
+                max_idle_s=0,
                 quiet_hours=None,
                 timezone="UTC",
                 channels=("desktop_mate",),
@@ -86,6 +88,8 @@ async def test_real_cron_preserves_existing_on_job(tmp_path) -> None:
             config=IdleConfig(
                 enabled=True,
                 scan_interval_s=60,  # large so it doesn't race the user job
+                startup_grace_s=0,
+                max_idle_s=0,
                 quiet_hours=None,
                 timezone="UTC",
                 channels=("desktop_mate",),

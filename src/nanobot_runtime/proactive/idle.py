@@ -52,6 +52,16 @@ class IdleConfig:
     idle_timeout_s: int = 300
     cooldown_s: int = 900
     scan_interval_s: int = 30
+    # Ceiling on how stale a session can be and still count as "idle" (not
+    # "dormant"). Sessions last touched more than this many seconds ago are
+    # skipped entirely. ``0`` disables the ceiling. Default 24h.
+    max_idle_s: int = 86_400
+    # Grace window after scanner construction during which sessions whose
+    # ``updated_at`` predates ``started_at`` are suppressed. Prevents the
+    # reboot-storm: a fresh process has no memory of prior cooldowns, so
+    # treating pre-existing idle sessions as fresh nudge targets would fire
+    # every stale session at once. See issue #14.
+    startup_grace_s: int = 300
     quiet_hours: QuietHours | None = None
     timezone: str = "UTC"
     channels: tuple[str, ...] = ("desktop_mate",)
@@ -82,6 +92,8 @@ class _CronLike(Protocol):
 
     def register_system_job(self, job: Any) -> Any: ...
 
+    def enable_job(self, job_id: str, enabled: bool = True) -> Any: ...
+
 
 class IdleScanner:
     """Scans sessions once per tick and issues a nudge if all gates pass."""
@@ -100,6 +112,9 @@ class IdleScanner:
         self._tz = ZoneInfo(config.timezone)
         self._clock = clock or (lambda: datetime.now(tz=self._tz))
         self._cooldown_until: dict[str, float] = {}
+        # Captured at construction, *not* first tick, so the grace applies
+        # from launcher start rather than first scheduled scan.
+        self._started_at: datetime = self._clock()
 
     async def scan_and_nudge(self) -> None:
         now = self._clock()
@@ -117,7 +132,12 @@ class IdleScanner:
                 continue
             if self._is_active_turn(key):
                 continue
-            if not self._is_idle(info.get("updated_at"), now):
+            updated_at = info.get("updated_at")
+            if not self._is_idle(updated_at, now):
+                continue
+            if self._is_dormant(updated_at, now):
+                continue
+            if self._is_pre_start(updated_at, now):
                 continue
             if self._is_in_cooldown(key, now):
                 continue
@@ -125,6 +145,8 @@ class IdleScanner:
             fresh = self._sessions.get_or_create(key)
             fresh_updated = getattr(fresh, "updated_at", None)
             if not self._is_idle(fresh_updated, now):
+                continue
+            if self._is_dormant(fresh_updated, now):
                 continue
 
             # Mark cooldown BEFORE dispatch so exceptions don't cause retry storms.
@@ -163,6 +185,35 @@ class IdleScanner:
         until = self._cooldown_until.get(key)
         return until is not None and now.timestamp() < until
 
+    def _is_dormant(self, ts: Any, now: datetime) -> bool:
+        """Sessions idle beyond ``max_idle_s`` are dormant — never nudged."""
+        max_idle = self._config.max_idle_s
+        if max_idle <= 0 or ts is None:
+            return False
+        try:
+            last = _to_aware(ts, self._tz)
+        except (TypeError, ValueError):
+            return False
+        return (now - last).total_seconds() >= max_idle
+
+    def _is_pre_start(self, ts: Any, now: datetime) -> bool:
+        """Skip sessions idle from before this process started (see issue #14).
+
+        Cooldown state is not persisted, so without this guard every session
+        with ``updated_at < started_at`` would be indistinguishable from a
+        legitimately-idle session on the first tick and get bulk-nudged.
+        """
+        grace = self._config.startup_grace_s
+        if grace <= 0 or ts is None:
+            return False
+        if (now - self._started_at).total_seconds() >= grace:
+            return False
+        try:
+            last = _to_aware(ts, self._tz)
+        except (TypeError, ValueError):
+            return False
+        return last < self._started_at
+
 
 def install_idle_system_job(
     *,
@@ -186,6 +237,22 @@ def install_idle_system_job(
       — is preserved).
     """
     if not config.enabled:
+        # Persisted job may exist from a previous run that had idle enabled.
+        # Disable it on disk so nanobot's scheduler doesn't fire it and fall
+        # through to the default agent-loop handler (see issue #14 follow-up).
+        enable = getattr(cron, "enable_job", None)
+        if callable(enable):
+            try:
+                result = enable(IDLE_SYSTEM_JOB_ID, False)
+                if result is not None:
+                    logger.info(
+                        "Idle watcher disabled: persisted job '{}' set enabled=False",
+                        IDLE_SYSTEM_JOB_ID,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to disable persisted idle job '{}'", IDLE_SYSTEM_JOB_ID
+                )
         return None
     if CronJob is None or CronSchedule is None or CronPayload is None:
         raise RuntimeError(

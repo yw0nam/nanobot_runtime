@@ -35,6 +35,10 @@ def _cfg(**overrides) -> IdleConfig:
         idle_timeout_s=300,
         cooldown_s=900,
         scan_interval_s=30,
+        # Default to 0 so the base judgment-gate tests don't accidentally hit
+        # the pre-start guard. Grace-specific tests override explicitly.
+        startup_grace_s=0,
+        max_idle_s=0,
         quiet_hours=None,
         timezone="Asia/Tokyo",
         channels=("desktop_mate",),
@@ -230,6 +234,109 @@ async def test_revalidation_race_skipped() -> None:
     agent.process_direct.assert_not_called()
 
 
+async def test_pre_start_session_skipped_during_grace() -> None:
+    """Regression: issue #14. Session idle from *before* the scanner started
+    must not nudge while still inside the startup grace window — otherwise a
+    gateway restart re-nudges every dormant session at once."""
+    start = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    # Clock at construction = start; scan ticks 30s later — still within grace.
+    clock_state = {"now": start}
+    config = _cfg(startup_grace_s=300)
+    agent = _build_agent()
+    # Session last updated 1h before scanner start → pre_start.
+    sessions = _build_sessions(
+        [_session_info("desktop_mate:abc", start, age_s=3600)],
+        fresh_by_key={"desktop_mate:abc": _fake_session(start - timedelta(seconds=3600))},
+    )
+
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: clock_state["now"]
+    )
+    clock_state["now"] = start + timedelta(seconds=30)
+    await scanner.scan_and_nudge()
+    agent.process_direct.assert_not_called()
+
+
+async def test_pre_start_session_nudged_after_grace_expires() -> None:
+    """After the grace window, a session still idle past threshold gets nudged."""
+    start = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    clock_state = {"now": start}
+    config = _cfg(startup_grace_s=300)
+    agent = _build_agent()
+    sessions = _build_sessions(
+        [_session_info("desktop_mate:abc", start, age_s=3600)],
+        fresh_by_key={"desktop_mate:abc": _fake_session(start - timedelta(seconds=3600))},
+    )
+
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: clock_state["now"]
+    )
+    # 6 minutes in — grace expired.
+    clock_state["now"] = start + timedelta(seconds=360)
+    sessions.list_sessions.return_value = [
+        _session_info("desktop_mate:abc", clock_state["now"], age_s=3600 + 360)
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(
+        clock_state["now"] - timedelta(seconds=3600 + 360)
+    )
+    await scanner.scan_and_nudge()
+    agent.process_direct.assert_awaited_once()
+
+
+async def test_post_start_session_not_skipped_during_grace() -> None:
+    """A session that became idle *during* this process' lifetime is a valid
+    nudge target even while the grace window is still open."""
+    start = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    clock_state = {"now": start}
+    config = _cfg(startup_grace_s=300, idle_timeout_s=60)
+    agent = _build_agent()
+    # Last activity 30s *after* start — strictly post-start.
+    post_start = start + timedelta(seconds=30)
+    sessions = MagicMock()
+    sessions.list_sessions.return_value = [
+        {"key": "desktop_mate:abc", "updated_at": post_start.isoformat()}
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(post_start)
+
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: clock_state["now"]
+    )
+    # Tick 2 minutes in — still in grace, but session is 90s idle (post-start).
+    clock_state["now"] = start + timedelta(seconds=120)
+    await scanner.scan_and_nudge()
+    agent.process_direct.assert_awaited_once()
+
+
+async def test_dormant_session_above_max_idle_skipped() -> None:
+    """Sessions older than ``max_idle_s`` are dormant, not idle — never nudged."""
+    now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    # 48h idle with a 24h ceiling → dormant.
+    config = _cfg(max_idle_s=86_400, startup_grace_s=0)
+    agent = _build_agent()
+    sessions = _build_sessions(
+        [_session_info("desktop_mate:abc", now, age_s=172_800)],
+        fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=172_800))},
+    )
+
+    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    await scanner.scan_and_nudge()
+    agent.process_direct.assert_not_called()
+
+
+async def test_max_idle_s_zero_disables_ceiling() -> None:
+    now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    config = _cfg(max_idle_s=0, startup_grace_s=0)
+    agent = _build_agent()
+    sessions = _build_sessions(
+        [_session_info("desktop_mate:abc", now, age_s=172_800)],
+        fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=172_800))},
+    )
+
+    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    await scanner.scan_and_nudge()
+    agent.process_direct.assert_awaited_once()
+
+
 async def test_all_gates_pass_triggers_process_direct_with_correct_args() -> None:
     now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
     config = _cfg(idle_prompt="You've been silent {minutes}m — say hi.")
@@ -317,6 +424,31 @@ async def test_install_disabled_config_is_noop() -> None:
 
     cron.register_system_job.assert_not_called()
     assert cron.on_job is sentinel  # untouched
+
+
+async def test_install_disabled_config_disables_persisted_job() -> None:
+    """Regression: issue #14. Launcher-level disable must also flip the persisted job off."""
+    agent = _build_agent()
+    sessions = _build_sessions([])
+    cron = MagicMock()
+    cron.on_job = None
+
+    install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg(enabled=False))
+
+    cron.enable_job.assert_called_once_with(IDLE_SYSTEM_JOB_ID, False)
+
+
+async def test_install_disabled_config_survives_enable_job_exception() -> None:
+    """If the cron service can't flip the job (e.g. doesn't know it), install is still a noop."""
+    agent = _build_agent()
+    sessions = _build_sessions([])
+    cron = MagicMock()
+    cron.enable_job.side_effect = RuntimeError("boom")
+    cron.on_job = None
+
+    # Must not raise.
+    install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg(enabled=False))
+    cron.register_system_job.assert_not_called()
 
 
 async def test_install_idle_job_invokes_scanner() -> None:

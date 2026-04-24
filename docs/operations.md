@@ -88,6 +88,7 @@ cd <workspace>
 YURI_IDLE_TIMEOUT_S=10 \
 YURI_IDLE_SCAN_INTERVAL_S=3 \
 YURI_IDLE_COOLDOWN_S=60 \
+YURI_IDLE_STARTUP_GRACE_S=0 \
 YURI_IDLE_QUIET_START= YURI_IDLE_QUIET_END= \
 .venv/bin/python run_gateway.py
 ```
@@ -95,6 +96,13 @@ YURI_IDLE_QUIET_START= YURI_IDLE_QUIET_END= \
 WS 클라이언트로 메시지 1개 보내고 15초 대기 — 자발 `stream_start →
 delta → stream_end` 가 들어오면 OK. (`YURI_...` 대신 워크스페이스 prefix
 에 맞춰 해석.)
+
+> **Note** (issue #14): 프로덕션에서는 기본값
+> `YURI_IDLE_STARTUP_GRACE_S=300` (5분) 과 `YURI_IDLE_MAX_IDLE_S=86400`
+> (24h) 가 재기동 직후 오래 잠들어있던 세션을 bulk-nudge 하는 폭주를
+> 방지한다. smoke 중에는 grace 를 0 으로 낮춰서 즉시 검증 가능하게 한다.
+> `YURI_IDLE_ENABLED=0` 으로 끄면 이미 `cron/jobs.json` 에 남아있는
+> `idle-watcher` 항목도 기동 시점에 `enabled=False` 로 자동 플립된다.
 
 ---
 
