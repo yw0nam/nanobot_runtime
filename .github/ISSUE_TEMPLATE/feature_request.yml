@@ -1,0 +1,60 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for nanobot_runtime
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Before filing, please consider whether the
+        change belongs in **nanobot_runtime** (this repo — hooks / gateway glue /
+        DesktopMateChannel) or **upstream nanobot-ai** (agent loop, channels,
+        sessions, cron). If it's upstream, file at
+        https://github.com/HKUDS/nanobot/issues instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem does this feature solve? What are you trying to accomplish?
+      placeholder: I'm always frustrated when ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this to work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches have you considered? (e.g., solving it upstream, a workspace-level workaround, a new MCP server outside this repo)
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Related Component
+      description: Which part of nanobot_runtime does this relate to?
+      options:
+        - DesktopMateChannel (WS protocol / routing / REST)
+        - TTS pipeline (hook + chunker / preprocessor / emotion / synthesizer)
+        - LTM integration (injection / args / consolidator / save path)
+        - Proactive (idle scanner / cron recipe)
+        - Gateway launcher / monkey-patch surface
+        - Hook API contract with upstream nanobot-ai
+        - Testing / E2E infrastructure
+        - Docs / setup / operations
+        - New MCP server (consumed by runtime)
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, examples from other projects, links to upstream discussions, screenshots, etc.
