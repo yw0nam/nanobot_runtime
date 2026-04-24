@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Upstream nanobot-ai bug / question
+    url: https://github.com/HKUDS/nanobot/issues
+    about: Report bugs in the agent loop, built-in channels, sessions, or cron — anything not specific to the runtime glue layer here.
+  - name: Upstream nanobot-ai discussions
+    url: https://github.com/HKUDS/nanobot/discussions
+    about: General questions about nanobot usage or configuration.
