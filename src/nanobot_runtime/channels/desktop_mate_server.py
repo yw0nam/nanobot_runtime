@@ -1,8 +1,8 @@
 """Server lifecycle and inbound loop mixin for DesktopMateChannel.
 
 ``_DesktopMateServerMixin`` provides ``start``, ``stop``, and
-``_connection_loop``. Methods access state initialised in
-DesktopMateChannel.__init__: ``config``, ``_running``, ``_stop_event``,
+``_connection_loop``. State from ``BaseChannel.__init__``: ``_running``.
+State from ``DesktopMateChannel.__init__``: ``config``, ``_stop_event``,
 ``_server``, ``_server_task``, ``_tts_enabled_per_chat``, and the methods
 ``_handshake``, ``_dispatch_http``, ``_apply_connection_tts_override``,
 ``_send_ready``, ``_decode_inbound_images``, ``_attach``, ``_send_frame``,
@@ -134,8 +134,8 @@ class _DesktopMateServerMixin:
             if not self.is_allowed(client_id):  # type: ignore[attr-defined]
                 try:
                     await connection.close(code=4003, reason="forbidden")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("desktop_mate: close(4003/forbidden) raised: {}", e)
                 return
 
             self._apply_connection_tts_override(connection, query)  # type: ignore[attr-defined]
@@ -144,7 +144,10 @@ class _DesktopMateServerMixin:
             try:
                 await self._connection_loop(connection, sender_id=client_id)
             except Exception as e:
-                logger.debug("desktop_mate: connection loop ended: {}", e)
+                logger.opt(exception=True).warning(
+                    "desktop_mate: connection loop exited unexpectedly (client={}): {}",
+                    client_id, e,
+                )
             finally:
                 self._detach_connection(connection)  # type: ignore[attr-defined]
 
@@ -186,9 +189,11 @@ class _DesktopMateServerMixin:
         if server_task is not None:
             try:
                 await asyncio.wait_for(server_task, timeout=2.0)
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.debug("desktop_mate: server task cleanup: {}", e)
+            except asyncio.TimeoutError:
+                logger.warning("desktop_mate: server task did not stop within 2s, cancelling")
                 server_task.cancel()
+            except Exception as e:
+                logger.warning("desktop_mate: server task ended with error during stop: {}", e)
             self._server_task = None  # type: ignore[attr-defined]
         self._chat_conn.clear()  # type: ignore[attr-defined]
         self._streams.clear()  # type: ignore[attr-defined]

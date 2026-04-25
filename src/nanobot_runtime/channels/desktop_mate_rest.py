@@ -20,6 +20,8 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from loguru import logger
+
 from websockets.datastructures import Headers
 from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
@@ -129,7 +131,11 @@ def handle_sessions_list(token: str, session_manager: Any, request: WsRequest) -
         return http_error(401, "Unauthorized")
     if session_manager is None:
         return http_error(503, "session manager unavailable")
-    sessions = session_manager.list_sessions()
+    try:
+        sessions = session_manager.list_sessions()
+    except Exception as exc:
+        logger.opt(exception=True).error("desktop_mate: list_sessions raised: {}", exc)
+        return http_error(500, "internal error")
     cleaned = [
         {k: v for k, v in s.items() if k != "path"}
         for s in sessions
@@ -150,7 +156,11 @@ def handle_session_messages(
         return http_error(400, "invalid session key")
     if not _is_dm_session(decoded):
         return http_error(404, "session not found")
-    data = session_manager.read_session_file(decoded)
+    try:
+        data = session_manager.read_session_file(decoded)
+    except Exception as exc:
+        logger.opt(exception=True).error("desktop_mate: read_session_file raised: {}", exc)
+        return http_error(500, "internal error")
     if data is None:
         return http_error(404, "session not found")
     return http_json_response(data)
@@ -168,7 +178,11 @@ def handle_session_delete(
         return http_error(400, "invalid session key")
     if not _is_dm_session(decoded):
         return http_error(404, "session not found")
-    deleted = session_manager.delete_session(decoded)
+    try:
+        deleted = session_manager.delete_session(decoded)
+    except Exception as exc:
+        logger.opt(exception=True).error("desktop_mate: delete_session raised: {}", exc)
+        return http_error(500, "internal error")
     return http_json_response({"deleted": bool(deleted)})
 
 
