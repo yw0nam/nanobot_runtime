@@ -17,9 +17,9 @@ import pytest
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronJob, CronPayload, CronSchedule
 
-from nanobot_runtime.services.proactive.idle import (
+from nanobot_runtime.config.idle import IdleConfig
+from nanobot_runtime.services.proactive.installer import (
     IDLE_SYSTEM_JOB_ID,
-    IdleConfig,
     install_idle_system_job,
 )
 

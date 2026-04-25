@@ -18,15 +18,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from nanobot_runtime.services.proactive.idle import (
+from nanobot_runtime.config.idle import IdleConfig, QuietHours
+from nanobot_runtime.services.proactive.installer import (
     IDLE_ASYNCIO_TASK_ATTR,
     IDLE_SYSTEM_JOB_ID,
-    IdleConfig,
-    IdleScanner,
-    QuietHours,
     install_idle_asyncio_task,
     install_idle_system_job,
 )
+from nanobot_runtime.services.proactive.scanner import IdleScanner
 
 _TZ = ZoneInfo("Asia/Tokyo")
 

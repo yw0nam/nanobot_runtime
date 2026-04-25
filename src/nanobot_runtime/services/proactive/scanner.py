@@ -1,4 +1,4 @@
-"""Idle-watcher system job for yuri / nanobot workspaces.
+"""Idle-watcher scanner — single judgment gate per scan tick.
 
 Phase 5 Proactive (A) — wakes the agent on a user's channel when a session
 has been silent past ``idle_timeout_s``. Schedule, session iteration and
@@ -17,74 +17,19 @@ Dispatch path: scanner publishes a synthesized ``InboundMessage`` with
 (deltas + stream_end), runs the agent loop, and publishes the final
 OutboundMessage — identical to a real user message, so DesktopMateChannel
 streaming and TTS chunk routing work without proactive-specific glue.
-
-Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
-import asyncio
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Callable, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+
+from nanobot_runtime.config.idle import IdleConfig, QuietHours
 
 try:
     from nanobot.bus.events import InboundMessage
-    from nanobot.cron.types import CronJob, CronPayload, CronSchedule
 except ImportError:  # pragma: no cover - allows isolated static analysis
-    CronJob = CronPayload = CronSchedule = None  # type: ignore[assignment]
     InboundMessage = None  # type: ignore[assignment]
-
-
-IDLE_SYSTEM_JOB_ID = "idle-watcher"
-IDLE_ASYNCIO_TASK_ATTR = "_yuri_idle_scanner_starter"
-
-_DEFAULT_IDLE_PROMPT = (
-    "[Idle Nudge] The user has been silent for {minutes} minutes. "
-    "Speak first as their desktop companion — greet them or pick up an earlier thread. "
-    "Keep it short (1-2 sentences). "
-    "Use the Current Time in your system prompt to choose an appropriate tone; if it looks "
-    "like deep-focus or late-night hours, stay warm and brief rather than starting a new topic."
-)
-
-
-class QuietHours(BaseModel):
-    """Local-time window during which idle nudges are suppressed entirely.
-
-    ``start`` and ``end`` are ``HH:MM`` strings in the config timezone. If
-    ``start > end`` the window spans midnight (e.g. ``22:00 → 06:00``).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    start: str = Field(description="HH:MM quiet-hours start in config timezone.")
-    end: str = Field(description="HH:MM quiet-hours end. If start > end, window spans midnight.")
-
-
-class IdleConfig(BaseModel):
-    """Configuration for the idle-watcher system job."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    enabled: bool = Field(default=True, description="Enable or disable the idle watcher entirely.")
-    idle_timeout_s: int = Field(default=300, description="Seconds of silence before a nudge is sent.")
-    cooldown_s: int = Field(default=900, description="Minimum seconds between nudges for the same session.")
-    scan_interval_s: int = Field(default=30, description="How often the watcher scans sessions (seconds).")
-    startup_grace_s: int = Field(
-        default=120,
-        ge=0,
-        description="Seconds after process start during which all nudges are suppressed. "
-        "Prevents the reboot-storm where dormant sessions trigger bulk nudges before "
-        "the in-memory cooldown table has been populated.",
-    )
-    quiet_hours: "QuietHours | None" = Field(default=None, description="Time window during which nudges are suppressed.")
-    timezone: str = Field(default="UTC", description="IANA timezone name for quiet-hours evaluation.")
-    channels: tuple[str, ...] = Field(default=("desktop_mate",), description="Channel names that receive idle nudges.")
-    idle_prompt: str = Field(default=_DEFAULT_IDLE_PROMPT, description="Prompt template; {minutes} is substituted.")
-    context_providers: tuple[Callable[[], Awaitable[str]], ...] = Field(
-        default_factory=tuple,
-        description="Reserved for Phase 5.5 context injection.",
-    )
 
 
 class _SessionManagerLike(Protocol):
@@ -235,123 +180,6 @@ class IdleScanner:
             del self._cooldown_until[key]
             return False
         return True
-
-
-def install_idle_system_job(
-    *,
-    agent: _AgentLike,
-    sessions: _SessionManagerLike,
-    cron: _CronLike,
-    config: IdleConfig,
-    clock: Callable[[], datetime] | None = None,
-) -> IdleScanner | None:
-    """Register the system cron job and wrap ``cron.on_job`` to route it to the scanner.
-
-    Returns the scanner (useful for tests or manual triggering) or ``None``
-    when ``config.enabled`` is False.
-
-    Side effects:
-    - ``cron.register_system_job(...)`` — registers a protected system job
-      (see ``nanobot/cron/service.py::register_system_job``).
-    - ``cron.on_job`` is replaced with a composite that dispatches the idle
-      job id to the scanner and delegates everything else to the previous
-      callback (so default nanobot cron behaviour — reminders, dream, etc.
-      — is preserved).
-    """
-    if not config.enabled:
-        return None
-    if CronJob is None or CronSchedule is None or CronPayload is None:
-        raise RuntimeError(
-            "nanobot.cron types unavailable — install_idle_system_job requires nanobot-ai runtime"
-        )
-
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=clock)
-
-    job = CronJob(
-        id=IDLE_SYSTEM_JOB_ID,
-        name=IDLE_SYSTEM_JOB_ID,
-        enabled=True,
-        schedule=CronSchedule(kind="every", every_ms=config.scan_interval_s * 1000),
-        payload=CronPayload(kind="system_event"),
-    )
-
-    previous_on_job = cron.on_job
-
-    async def composite(job: Any) -> Any:
-        if getattr(job, "id", None) == IDLE_SYSTEM_JOB_ID:
-            await scanner.scan_and_nudge()
-            return None
-        if previous_on_job is not None:
-            return await previous_on_job(job)
-        return None
-
-    cron.on_job = composite
-    cron.register_system_job(job)
-    logger.info(
-        "Idle watcher installed (timeout={}s cooldown={}s scan={}s channels={})",
-        config.idle_timeout_s,
-        config.cooldown_s,
-        config.scan_interval_s,
-        list(config.channels),
-    )
-    return scanner
-
-
-def install_idle_asyncio_task(
-    *,
-    agent: Any,
-    sessions: _SessionManagerLike,
-    config: IdleConfig,
-    clock: Callable[[], datetime] | None = None,
-) -> IdleScanner | None:
-    """Install the idle watcher as a free-standing asyncio task on ``agent``.
-
-    Why: nanobot's ``cli/commands.py`` reassigns ``cron.on_job`` *after*
-    ``AgentLoop.__init__`` returns, which silently overwrites the composite
-    that :func:`install_idle_system_job` installs during ``hooks_factory``.
-    The cron path therefore never reaches ``scan_and_nudge`` in a real
-    gateway boot. This installer sidesteps cron entirely: the gateway
-    monkey-patch wraps ``AgentLoop.run`` and starts the stashed coroutine
-    once the event loop is live, so the watcher runs on its own ``asyncio``
-    timer with no third-party touch points.
-
-    Returns the scanner (so tests/manual triggers still work) or ``None``
-    when ``config.enabled`` is False.
-
-    Side effect: sets ``agent`` attribute :data:`IDLE_ASYNCIO_TASK_ATTR` to
-    a zero-arg coroutine factory. The gateway patch spawns it exactly once;
-    if no patch is installed, the watcher is silently inert (matches the
-    "disabled" contract).
-    """
-    if not config.enabled:
-        return None
-
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=clock)
-
-    async def _scanner_loop() -> None:
-        logger.info(
-            "Idle watcher started (timeout={}s cooldown={}s scan={}s channels={})",
-            config.idle_timeout_s,
-            config.cooldown_s,
-            config.scan_interval_s,
-            list(config.channels),
-        )
-        try:
-            while True:
-                await asyncio.sleep(config.scan_interval_s)
-                try:
-                    await scanner.scan_and_nudge()
-                except Exception:
-                    # ``scan_and_nudge`` already swallows per-target failures;
-                    # this guard catches programming errors (bad config,
-                    # missing deps) so one bad tick can't kill the watcher.
-                    logger.exception("Idle watcher tick failed")
-        except asyncio.CancelledError:
-            logger.info("Idle watcher cancelled")
-            raise
-
-    setattr(agent, IDLE_ASYNCIO_TASK_ATTR, _scanner_loop)
-    return scanner
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
