@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot_runtime.services.hooks.ltm_consolidator import (
+from nanobot_runtime.services.hooks.ltm.consolidator import (
     LTMSavingConsolidator,
     install_ltm_saving,
 )

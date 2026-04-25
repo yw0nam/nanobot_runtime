@@ -4,7 +4,7 @@ from __future__ import annotations
 from nanobot.agent.hook import AgentHookContext
 from nanobot.providers.base import ToolCallRequest
 
-from nanobot_runtime.services.hooks.ltm_args import LTMArgumentsHook
+from nanobot_runtime.services.hooks.ltm.args import LTMArgumentsHook
 
 
 def _call(name: str, **args: object) -> ToolCallRequest:

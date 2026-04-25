@@ -1,13 +1,13 @@
 """AgentLoop hooks + a factory that wires a standard LTM hook set."""
 from nanobot.agent.hook import AgentHook
 
-from nanobot_runtime.services.hooks.ltm_args import LTMArgumentsHook
+from nanobot_runtime.services.hooks.ltm.args import LTMArgumentsHook
 from nanobot_runtime.clients.ltm import LTMMCPClient
-from nanobot_runtime.services.hooks.ltm_consolidator import (
+from nanobot_runtime.services.hooks.ltm.consolidator import (
     LTMSavingConsolidator,
     install_ltm_saving,
 )
-from nanobot_runtime.services.hooks.ltm_injection import LTMInjectionHook
+from nanobot_runtime.services.hooks.ltm.injection import LTMInjectionHook
 
 
 def build_ltm_hooks(

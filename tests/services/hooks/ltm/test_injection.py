@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 from nanobot.agent.hook import AgentHookContext
 
-from nanobot_runtime.services.hooks.ltm_injection import LTMInjectionHook
+from nanobot_runtime.services.hooks.ltm.injection import LTMInjectionHook
 
 
 async def test_before_iteration_searches_last_user_message_and_injects_into_system_prompt() -> None:
