@@ -2,7 +2,8 @@
 
 TTSSink routing: ``send_tts_chunk`` does not pass ``chat_id``. The channel
 tracks the currently active stream via ``(stream_id → (chat_id, conn))``
-registered on first ``send_delta`` and routes TTS chunks to the latest.
+registered on the first ``send_delta`` for a new stream, or on a
+``_stream_start``-tagged ``send()`` call. Routes TTS chunks to the latest.
 Stream entries are kept past ``stream_end`` so late TTS chunks (arriving
 via the TTS Barrier) still have a chat_id to route to.
 
@@ -222,6 +223,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
     ) -> None:
         conn = self._chat_conn.get(chat_id)
         if conn is None:
+            logger.warning("desktop_mate: send_delta: no connection for chat_id={}", chat_id)
             return
 
         meta = metadata or {}

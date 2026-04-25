@@ -4,14 +4,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from loguru import logger
+
 
 @dataclass
 class DesktopMateConfig:
     """Runtime configuration for DesktopMateChannel.
 
     Clients connect at ``ws://{host}:{port}{path}?token=<token>&client_id=<id>``.
-    ``token`` is checked with constant-time equality; ``client_id`` becomes the
-    nanobot ``sender_id`` for ``allow_from`` authorization.
+    ``token`` is matched with plain string equality (not constant-time);
+    ``client_id`` becomes the nanobot ``sender_id`` for ``allow_from`` authorization.
     """
 
     enabled: bool = True
@@ -56,6 +58,10 @@ def _coerce_config(section: Any) -> DesktopMateConfig:
     elif isinstance(section, dict):
         raw = dict(section)
     else:
+        logger.warning(
+            "desktop_mate: unrecognised config type %s — using defaults",
+            type(section).__name__,
+        )
         raw = {}
 
     known = {f.name for f in DesktopMateConfig.__dataclass_fields__.values()}
