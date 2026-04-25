@@ -56,20 +56,28 @@ class IrodoriClient:
 
     # ── TTSSynthesizer Protocol ───────────────────────────────────────
 
-    async def synthesize(self, text: str) -> str | None:
+    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
         tts_text = text.strip() if text else ""
         if not tts_text:
             return None
+
+        # Per-call ``reference_id`` (e.g. forwarded from a Unity envelope's
+        # ``reference_id`` field via TTSHook's resolver) overrides the
+        # constructor default; an explicit empty string also disables the
+        # baked-in reference.
+        effective_ref = reference_id if reference_id is not None else self.reference_id
 
         # Entry log: lets regression E2E verify "synthesize() was NOT
         # called" for TTS-off cases by grepping the gateway log. Truncate
         # long text to keep the line bounded.
         preview = tts_text if len(tts_text) <= 60 else tts_text[:57] + "..."
-        logger.info("IrodoriClient.synthesize: {!r}", preview)
+        logger.info("IrodoriClient.synthesize: {!r} ref={!r}", preview, effective_ref)
 
-        reference_audio_path = self._resolve_reference_audio()
-        if self.reference_id is not None and reference_audio_path is None:
-            # Reference requested but couldn't be resolved — fail closed.
+        reference_audio_path = self._resolve_reference_audio(effective_ref)
+        if effective_ref and reference_audio_path is None:
+            # Non-empty reference requested but couldn't be resolved — fail
+            # closed. Empty/None ``effective_ref`` means "no reference"; the
+            # missing audio path is then the expected outcome.
             return None
 
         audio_bytes = await self._post_synthesize(tts_text, reference_audio_path)
@@ -79,16 +87,16 @@ class IrodoriClient:
 
     # ── Internals ─────────────────────────────────────────────────────
 
-    def _resolve_reference_audio(self) -> Path | None:
-        if self.reference_id is None:
+    def _resolve_reference_audio(self, reference_id: str | None) -> Path | None:
+        if not reference_id:
             return None
         if self.ref_audio_dir is None:
             logger.error(
                 "IrodoriClient: reference_id '{}' given but ref_audio_dir is not set",
-                self.reference_id,
+                reference_id,
             )
             return None
-        candidate = self.ref_audio_dir / self.reference_id / "merged_audio.mp3"
+        candidate = self.ref_audio_dir / reference_id / "merged_audio.mp3"
         if not candidate.exists():
             logger.error("IrodoriClient: reference audio not found: {}", candidate)
             return None

@@ -84,6 +84,10 @@ class _DesktopMateServerMixin:
 
             self._attach(chat_id, connection)  # type: ignore[attr-defined]
             self._tts_enabled_per_chat[chat_id] = bool(envelope.tts_enabled)  # type: ignore[attr-defined]
+            # Cache the FE-chosen voice for the lifetime of this chat. Used by
+            # TTSHook (via the LazyChannelTTSSink resolver) so proactive turns
+            # — which carry no envelope — still hit the same voice.
+            self._reference_id_per_chat[chat_id] = envelope.reference_id  # type: ignore[attr-defined]
             # On any non-happy exit, unlink decoded image files to avoid disk
             # leakage. Don't propagate the exception — the connection keeps serving.
             try:

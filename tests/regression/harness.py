@@ -75,9 +75,11 @@ class RecordingSynthesizer:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.ref_calls: list[str | None] = []
 
-    async def synthesize(self, text: str) -> str | None:
+    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
         self.calls.append(text)
+        self.ref_calls.append(reference_id)
         # Short, fixed base64 so tests can assert the FULL tts_chunk
         # without caring about actual audio.
         return "QUJDRA=="  # "ABCD"
