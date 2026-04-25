@@ -161,7 +161,12 @@ class IdleScanner:
 
     def _is_in_cooldown(self, key: str, now: datetime) -> bool:
         until = self._cooldown_until.get(key)
-        return until is not None and now.timestamp() < until
+        if until is None:
+            return False
+        if now.timestamp() >= until:
+            del self._cooldown_until[key]
+            return False
+        return True
 
 
 def install_idle_system_job(

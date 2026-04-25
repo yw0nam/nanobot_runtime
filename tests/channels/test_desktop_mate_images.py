@@ -410,7 +410,7 @@ async def test_io_error_during_persist_surfaces_as_io_error(
         raise OSError("disk write failed (simulated)")
 
     monkeypatch.setattr(
-        "nanobot_runtime.channels.desktop_mate.save_base64_data_url",
+        "nanobot_runtime.channels.desktop_mate_image.save_base64_data_url",
         _raise_oserror,
     )
     conn = FakeConnection(inbox=[

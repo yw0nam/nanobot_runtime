@@ -79,3 +79,18 @@ def test_default_min_chunk_length_is_50() -> None:
     c = SentenceChunker()
     # A 10-char sentence should NOT emit at default min_chunk_length=50.
     assert c.feed("Hello.") == []
+
+
+def test_while_true_loop_breaks_when_no_real_position_found() -> None:
+    # Regression: the while True loop must break and not spin when find_eos
+    # returns positions that all fail the _SENTENCE_ENDERS filter. A buffer
+    # ending with whitespace after a letter is a natural case where the EOS
+    # detector may report a position but the stripped prefix does not end with
+    # a sentence-ender character, so real_positions ends up empty.
+    c = SentenceChunker(min_chunk_length=0)
+    # Feed text with no sentence-ending character — loop must exit without
+    # hanging and leave the text in the buffer for flush().
+    result = c.feed("No terminator, just a trailing space ")
+    assert result == []
+    remainder = c.flush()
+    assert remainder is not None and "No terminator" in remainder

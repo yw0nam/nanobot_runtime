@@ -207,15 +207,17 @@ class TTSHook(AgentHook):
             self._states[key] = state
         return state
 
+    def _sink_is_enabled(self) -> bool:
+        fn = getattr(self._sink, "is_enabled", None)
+        return not callable(fn) or fn()
+
     def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
         text, emotion = self._preprocessor.process(sentence)
         if not text or not any(ch.isalnum() for ch in text):
             return
-        # Honour the sink's opt-in TTS-off signal. Sinks without this method
-        # (e.g. older test fakes) are treated as always-enabled. We drop the
-        # sentence silently — no task created, no synthesis, no sequence bump.
-        is_enabled = getattr(self._sink, "is_enabled", None)
-        if callable(is_enabled) and not is_enabled():
+        # Sinks without is_enabled() are treated as always-enabled.
+        # We drop silently — no task, no synthesis, no sequence bump.
+        if not self._sink_is_enabled():
             return
         sequence = state.sequence
         state.sequence += 1
@@ -225,14 +227,10 @@ class TTSHook(AgentHook):
     async def _synth_and_emit(
         self, text: str, emotion: str | None, sequence: int
     ) -> None:
-        # Second-chance check: _dispatch_sentence already gated, but the
-        # sink's enabled state can change between "task scheduled" and
-        # "task running" — for instance when the channel hasn't yet
-        # registered the stream at dispatch time, then learns it's off.
-        # Re-checking here ensures we never call synthesize() for a
-        # stream that's known-disabled by the time we'd do the work.
-        is_enabled = getattr(self._sink, "is_enabled", None)
-        if callable(is_enabled) and not is_enabled():
+        # Second-chance check: sink's enabled state can change between task
+        # scheduled and task running (e.g. channel registers the stream as
+        # off after dispatch). Re-checking avoids a wasted synthesize() call.
+        if not self._sink_is_enabled():
             return
         try:
             audio_b64 = await self._synthesizer.synthesize(text)

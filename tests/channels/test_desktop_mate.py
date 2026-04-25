@@ -468,8 +468,8 @@ def test_desktop_mate_config_defaults_keepalive_and_max_size():
     cfg = DesktopMateConfig()
     assert cfg.ping_interval_s == 20.0
     assert cfg.ping_timeout_s == 20.0
-    # 6 MB covers DMP image-in-base64 upper bound.
-    assert cfg.max_message_bytes == 6 * 1024 * 1024
+    # 60 MB: _MAX_IMAGES_PER_MESSAGE (4) × 10 MB base64-encoded (×4/3) ≈ 53 MB.
+    assert cfg.max_message_bytes == 60 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -759,4 +759,4 @@ async def test_start_passes_ping_and_max_size_to_serve(monkeypatch):
     kwargs = captured.get("kwargs") or {}
     assert kwargs.get("ping_interval") == 20.0
     assert kwargs.get("ping_timeout") == 20.0
-    assert kwargs.get("max_size") == 6 * 1024 * 1024
+    assert kwargs.get("max_size") == 60 * 1024 * 1024
