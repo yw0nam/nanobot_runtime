@@ -319,6 +319,32 @@ async def test_install_disabled_config_is_noop() -> None:
     assert cron.on_job is sentinel  # untouched
 
 
+def test_is_in_cooldown_evicts_expired_entry() -> None:
+    """_is_in_cooldown must remove expired entries from _cooldown_until.
+
+    Regression: the method changed from a pure read to a read-with-eviction.
+    Removing the ``del`` would silently pass higher-level cooldown tests while
+    allowing stale keys to accumulate in long-running processes.
+    """
+    now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
+    scanner = IdleScanner(
+        agent=_build_agent(),
+        sessions=_build_sessions([]),
+        config=_cfg(cooldown_s=900),
+        clock=lambda: now,
+    )
+    key = "desktop_mate:abc"
+    # Plant an already-expired cooldown entry (expired 1 second ago).
+    scanner._cooldown_until[key] = now.timestamp() - 1
+
+    # First call: expired → must return False and remove the key.
+    assert scanner._is_in_cooldown(key, now) is False
+    assert key not in scanner._cooldown_until
+
+    # Second call: key is gone → must still return False (not KeyError).
+    assert scanner._is_in_cooldown(key, now) is False
+
+
 async def test_install_idle_job_invokes_scanner() -> None:
     """When composite receives the idle job id, it must trigger scan_and_nudge."""
     now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
