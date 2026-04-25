@@ -19,10 +19,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from nanobot_runtime.proactive.idle import (
+    IDLE_ASYNCIO_TASK_ATTR,
     IDLE_SYSTEM_JOB_ID,
     IdleConfig,
     IdleScanner,
     QuietHours,
+    install_idle_asyncio_task,
     install_idle_system_job,
 )
 
@@ -462,3 +464,94 @@ async def test_published_inbound_carries_proactive_and_wants_stream() -> None:
     assert msg.metadata.get("proactive") is True
     assert msg.metadata.get("_wants_stream") is True
     assert msg.session_key_override == "desktop_mate:abc"
+
+
+# ---------- install_idle_asyncio_task tests ----------------------------------
+#
+# These tests cover the cron-bypass installer added to defeat
+# ``cli/commands.py:764`` overwriting the cron composite. The installer
+# should: stash a coroutine factory on the agent, run scanner.scan_and_nudge
+# once per scan_interval_s when that coroutine is driven, and be a no-op
+# when ``enabled=False``.
+
+
+async def test_asyncio_install_disabled_is_noop() -> None:
+    """``enabled=False`` must not stash a coroutine starter on the agent."""
+    # SimpleNamespace because MagicMock auto-creates attributes on access,
+    # which would mask a missing attribute.
+    agent = SimpleNamespace(_session_locks={}, bus=MagicMock())
+    sessions = _build_sessions([])
+
+    result = install_idle_asyncio_task(agent=agent, sessions=sessions, config=_cfg(enabled=False))
+
+    assert result is None
+    assert not hasattr(agent, IDLE_ASYNCIO_TASK_ATTR)
+
+
+async def test_asyncio_install_stashes_coroutine_factory_on_agent() -> None:
+    """Enabled install must place a zero-arg async callable at the agreed attribute name."""
+    agent = _build_agent()
+    sessions = _build_sessions([])
+
+    scanner = install_idle_asyncio_task(agent=agent, sessions=sessions, config=_cfg())
+
+    assert scanner is not None
+    starter = getattr(agent, IDLE_ASYNCIO_TASK_ATTR)
+    assert callable(starter)
+    coro = starter()
+    assert asyncio.iscoroutine(coro)
+    coro.close()
+
+
+async def test_asyncio_loop_calls_scan_and_nudge_each_tick() -> None:
+    """Driving the stashed coroutine for two ticks must yield two scan_and_nudge calls."""
+    agent = _build_agent()
+    sessions = _build_sessions([])
+    config = _cfg(scan_interval_s=1)
+
+    scanner = install_idle_asyncio_task(agent=agent, sessions=sessions, config=config)
+    assert scanner is not None
+    scanner.scan_and_nudge = AsyncMock()  # type: ignore[method-assign]
+
+    starter = getattr(agent, IDLE_ASYNCIO_TASK_ATTR)
+    task = asyncio.create_task(starter())
+    try:
+        # Two scan_interval_s windows + slack — fast clock doesn't help here because
+        # the coroutine uses real ``asyncio.sleep``.
+        await asyncio.sleep(2.5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert scanner.scan_and_nudge.await_count >= 2
+
+
+async def test_asyncio_loop_swallows_tick_exceptions() -> None:
+    """One bad tick must not kill the watcher — subsequent ticks must still fire."""
+    agent = _build_agent()
+    sessions = _build_sessions([])
+    config = _cfg(scan_interval_s=1)
+
+    scanner = install_idle_asyncio_task(agent=agent, sessions=sessions, config=config)
+    assert scanner is not None
+
+    calls = {"n": 0}
+
+    async def _flaky_scan() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+
+    scanner.scan_and_nudge = _flaky_scan  # type: ignore[method-assign]
+
+    starter = getattr(agent, IDLE_ASYNCIO_TASK_ATTR)
+    task = asyncio.create_task(starter())
+    try:
+        await asyncio.sleep(2.5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert calls["n"] >= 2  # second tick fired despite first one raising

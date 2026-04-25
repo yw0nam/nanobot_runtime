@@ -20,6 +20,7 @@ streaming and TTS chunk routing work without proactive-specific glue.
 
 Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
+import asyncio
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol
 from zoneinfo import ZoneInfo
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - allows isolated static analysis
 
 
 IDLE_SYSTEM_JOB_ID = "idle-watcher"
+IDLE_ASYNCIO_TASK_ATTR = "_yuri_idle_scanner_starter"
 
 _DEFAULT_IDLE_PROMPT = (
     "[Idle Nudge] The user has been silent for {minutes} minutes. "
@@ -292,6 +294,63 @@ def install_idle_system_job(
         config.scan_interval_s,
         list(config.channels),
     )
+    return scanner
+
+
+def install_idle_asyncio_task(
+    *,
+    agent: Any,
+    sessions: _SessionManagerLike,
+    config: IdleConfig,
+    clock: Callable[[], datetime] | None = None,
+) -> IdleScanner | None:
+    """Install the idle watcher as a free-standing asyncio task on ``agent``.
+
+    Why: nanobot's ``cli/commands.py`` reassigns ``cron.on_job`` *after*
+    ``AgentLoop.__init__`` returns, which silently overwrites the composite
+    that :func:`install_idle_system_job` installs during ``hooks_factory``.
+    The cron path therefore never reaches ``scan_and_nudge`` in a real
+    gateway boot. This installer sidesteps cron entirely: the gateway
+    monkey-patch wraps ``AgentLoop.run`` and starts the stashed coroutine
+    once the event loop is live, so the watcher runs on its own ``asyncio``
+    timer with no third-party touch points.
+
+    Returns the scanner (so tests/manual triggers still work) or ``None``
+    when ``config.enabled`` is False.
+
+    Side effect: sets ``agent`` attribute :data:`IDLE_ASYNCIO_TASK_ATTR` to
+    a zero-arg coroutine factory. The gateway patch spawns it exactly once;
+    if no patch is installed, the watcher is silently inert (matches the
+    "disabled" contract).
+    """
+    if not config.enabled:
+        return None
+
+    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=clock)
+
+    async def _scanner_loop() -> None:
+        logger.info(
+            "Idle watcher started (timeout={}s cooldown={}s scan={}s channels={})",
+            config.idle_timeout_s,
+            config.cooldown_s,
+            config.scan_interval_s,
+            list(config.channels),
+        )
+        try:
+            while True:
+                await asyncio.sleep(config.scan_interval_s)
+                try:
+                    await scanner.scan_and_nudge()
+                except Exception:
+                    # ``scan_and_nudge`` already swallows per-target failures;
+                    # this guard catches programming errors (bad config,
+                    # missing deps) so one bad tick can't kill the watcher.
+                    logger.exception("Idle watcher tick failed")
+        except asyncio.CancelledError:
+            logger.info("Idle watcher cancelled")
+            raise
+
+    setattr(agent, IDLE_ASYNCIO_TASK_ATTR, _scanner_loop)
     return scanner
 
 

@@ -6,8 +6,16 @@ pre-imports ``nanobot.agent.loop.AgentLoop`` and monkey-patches its
 dispatches to nanobot's Typer CLI with the ``gateway`` subcommand so the
 patch applies in-process to the AgentLoop constructed by the CLI.
 
+Also patches ``AgentLoop.run`` to spawn a stashed idle-watcher coroutine
+once the event loop is live. ``hooks_factory`` cannot do this directly:
+it executes inside ``AgentLoop.__init__``, before nanobot's CLI has
+finished wiring (in particular, before ``cli/commands.py`` reassigns
+``cron.on_job``), and outside any running event loop. By deferring the
+spawn to ``run``, we guarantee both a live loop and a fully-wired agent.
+
 Pinned to nanobot 0.1.5.x — version drift fails loud at startup.
 """
+import asyncio
 import inspect
 import os
 from typing import Any, Callable
@@ -17,6 +25,8 @@ from loguru import logger
 from nanobot.agent.hook import AgentHook
 from nanobot.agent.loop import AgentLoop
 from nanobot.channels.manager import ChannelManager
+
+from nanobot_runtime.proactive.idle import IDLE_ASYNCIO_TASK_ATTR
 
 _SUPPORTED_PREFIXES = ("0.1.5",)
 
@@ -44,6 +54,35 @@ def _install_monkey_patch(hooks_factory: HooksFactory) -> None:
         )
 
     AgentLoop.__init__ = _patched_init  # type: ignore[assignment]
+
+
+def _install_run_patch() -> None:
+    """Wrap ``AgentLoop.run`` to spawn a stashed idle-watcher task once.
+
+    The watcher coroutine factory is set by
+    :func:`nanobot_runtime.proactive.idle.install_idle_asyncio_task` during
+    ``hooks_factory``. We can't ``asyncio.create_task`` it from there
+    because ``__init__`` runs synchronously before the event loop is up.
+    By the time ``run`` is awaited, ``cli/commands.py`` has finished
+    reassigning ``cron.on_job`` and the event loop is live — both
+    preconditions for a working scanner.
+
+    Idempotent via ``_yuri_idle_task_started`` so a hypothetical double-run
+    cannot stack two scanners on the same agent. The spawned task is also
+    stored on the agent so callers (tests, ``/stop`` shutdown) can cancel it.
+    """
+    _orig_run = AgentLoop.run
+
+    async def _patched_run(self: AgentLoop, *args: Any, **kwargs: Any) -> Any:
+        starter = getattr(self, IDLE_ASYNCIO_TASK_ATTR, None)
+        if starter is not None and not getattr(self, "_yuri_idle_task_started", False):
+            self._yuri_idle_task_started = True  # type: ignore[attr-defined]
+            task = asyncio.create_task(starter(), name="yuri-idle-watcher")
+            self._yuri_idle_task = task  # type: ignore[attr-defined]
+            logger.info("nanobot_runtime: idle watcher task spawned")
+        return await _orig_run(self, *args, **kwargs)
+
+    AgentLoop.run = _patched_run  # type: ignore[assignment]
 
 
 def _install_channel_manager_patch() -> None:
@@ -119,6 +158,7 @@ def run(
     ``NANOBOT_WORKSPACE`` env vars, then to ``./nanobot.json`` / ``.``.
     """
     _install_monkey_patch(hooks_factory)
+    _install_run_patch()
     _install_channel_manager_patch()
 
     # Import after patch so any import-time side effects see the patched class.
