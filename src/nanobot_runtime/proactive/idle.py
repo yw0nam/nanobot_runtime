@@ -4,11 +4,23 @@ Phase 5 Proactive (A) — wakes the agent on a user's channel when a session
 has been silent past ``idle_timeout_s``. Schedule, session iteration and
 outbound delivery all ride nanobot-native primitives; the only logic we
 own is the judgment gate (quiet hours, channel allowlist, idle threshold,
-active-turn, cooldown, re-validation race).
+active-turn, cooldown, re-validation race) plus single-target selection.
+
+Selection model: at most one nudge per scan tick, sent to the most-recently
+updated allowlisted session. Conversation history does not cross channels
+(``unifiedSession=false``), so a "most recent" target is well-defined per
+allowlist scope. See issue #19 for the cross-channel design space.
+
+Dispatch path: scanner publishes a synthesized ``InboundMessage`` with
+``_wants_stream=True`` and ``proactive=True`` metadata. The nanobot
+``AgentLoop._dispatch`` consumer picks it up, wires the streaming hooks
+(deltas + stream_end), runs the agent loop, and publishes the final
+OutboundMessage — identical to a real user message, so DesktopMateChannel
+streaming and TTS chunk routing work without proactive-specific glue.
 
 Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol
 from zoneinfo import ZoneInfo
 
@@ -16,9 +28,11 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 try:
+    from nanobot.bus.events import InboundMessage
     from nanobot.cron.types import CronJob, CronPayload, CronSchedule
 except ImportError:  # pragma: no cover - allows isolated static analysis
     CronJob = CronPayload = CronSchedule = None  # type: ignore[assignment]
+    InboundMessage = None  # type: ignore[assignment]
 
 
 IDLE_SYSTEM_JOB_ID = "idle-watcher"
@@ -54,6 +68,13 @@ class IdleConfig(BaseModel):
     idle_timeout_s: int = Field(default=300, description="Seconds of silence before a nudge is sent.")
     cooldown_s: int = Field(default=900, description="Minimum seconds between nudges for the same session.")
     scan_interval_s: int = Field(default=30, description="How often the watcher scans sessions (seconds).")
+    startup_grace_s: int = Field(
+        default=120,
+        ge=0,
+        description="Seconds after process start during which all nudges are suppressed. "
+        "Prevents the reboot-storm where dormant sessions trigger bulk nudges before "
+        "the in-memory cooldown table has been populated.",
+    )
     quiet_hours: "QuietHours | None" = Field(default=None, description="Time window during which nudges are suppressed.")
     timezone: str = Field(default="UTC", description="IANA timezone name for quiet-hours evaluation.")
     channels: tuple[str, ...] = Field(default=("desktop_mate",), description="Channel names that receive idle nudges.")
@@ -71,14 +92,7 @@ class _SessionManagerLike(Protocol):
 
 class _AgentLike(Protocol):
     _session_locks: dict[str, Any]
-
-    async def process_direct(
-        self,
-        content: str,
-        session_key: str = ...,
-        channel: str = ...,
-        chat_id: str = ...,
-    ) -> Any: ...
+    bus: Any  # nanobot.bus.queue.MessageBus — typed loosely so this module imports without nanobot.
 
 
 class _CronLike(Protocol):
@@ -104,12 +118,44 @@ class IdleScanner:
         self._tz = ZoneInfo(config.timezone)
         self._clock = clock or (lambda: datetime.now(tz=self._tz))
         self._cooldown_until: dict[str, float] = {}
+        self._started_at: datetime = self._clock()
 
     async def scan_and_nudge(self) -> None:
         now = self._clock()
+        if (now - self._started_at).total_seconds() < self._config.startup_grace_s:
+            return
         if self._config.quiet_hours and _in_quiet_hours(now, self._config.quiet_hours):
             return
 
+        target = self._select_target(now)
+        if target is None:
+            return
+
+        key, channel, chat_id, fresh_updated = target
+
+        # Mark cooldown BEFORE dispatch so a downstream failure cannot drive a retry storm.
+        self._cooldown_until[key] = now.timestamp() + self._config.cooldown_s
+
+        minutes = _minutes_between(fresh_updated, now)
+        prompt = self._config.idle_prompt.format(minutes=minutes)
+        try:
+            await self._dispatch_nudge(key=key, channel=channel, chat_id=chat_id, prompt=prompt)
+            logger.info("Idle nudge dispatched: session={} idle={}m", key, minutes)
+        except Exception:
+            logger.exception("Idle nudge failed for {}", key)
+
+    def _select_target(
+        self, now: datetime
+    ) -> tuple[str, str, str, datetime] | None:
+        """Pick the most-recently-updated allowlisted session that passes every gate.
+
+        Returns ``(session_key, channel, chat_id, fresh_updated_at)`` or ``None``.
+
+        Selection — single target per tick — embodies issue #19's per-channel
+        isolation (no cross-channel "user is active somewhere" notion) and the
+        Phase 5-A spec of "one nudge per scan tick at most".
+        """
+        best: tuple[str, str, str, datetime] | None = None
         for info in self._sessions.list_sessions():
             key = info.get("key") or ""
             if ":" not in key:
@@ -130,22 +176,38 @@ class IdleScanner:
             fresh_updated = getattr(fresh, "updated_at", None)
             if not self._is_idle(fresh_updated, now):
                 continue
-
-            # Mark cooldown BEFORE dispatch so exceptions don't cause retry storms.
-            self._cooldown_until[key] = now.timestamp() + self._config.cooldown_s
-
-            minutes = _minutes_between(fresh_updated, now)
-            prompt = self._config.idle_prompt.format(minutes=minutes)
             try:
-                await self._agent.process_direct(
-                    prompt,
-                    session_key=key,
-                    channel=channel,
-                    chat_id=chat_id,
-                )
-                logger.info("Idle nudge delivered: session={} idle={}m", key, minutes)
-            except Exception:
-                logger.exception("Idle nudge failed for {}", key)
+                fresh_dt = _to_aware(fresh_updated, self._tz)
+            except (TypeError, ValueError):
+                continue
+
+            if best is None or fresh_dt > best[3]:
+                best = (key, channel, chat_id, fresh_dt)
+        return best
+
+    async def _dispatch_nudge(
+        self, *, key: str, channel: str, chat_id: str, prompt: str
+    ) -> None:
+        """Publish a synthesized inbound message that rides the normal _dispatch path.
+
+        ``_wants_stream`` enables the streaming callback wiring inside
+        ``AgentLoop._dispatch`` (deltas + stream_end OutboundMessages on the bus),
+        which is what registers ``_current_stream_id`` on DesktopMateChannel and
+        makes TTS chunk routing work end-to-end.
+        """
+        if InboundMessage is None:  # pragma: no cover - import-time guard
+            raise RuntimeError(
+                "nanobot.bus.events unavailable — IdleScanner requires nanobot-ai runtime"
+            )
+        msg = InboundMessage(
+            channel=channel,
+            sender_id="idle-watcher",
+            chat_id=chat_id,
+            content=prompt,
+            metadata={"proactive": True, "_wants_stream": True},
+            session_key_override=key,
+        )
+        await self._agent.bus.publish_inbound(msg)
 
     def _is_active_turn(self, key: str) -> bool:
         locks = getattr(self._agent, "_session_locks", None)

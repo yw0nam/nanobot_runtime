@@ -29,7 +29,8 @@ async def test_real_cron_fires_scanner_and_nudges_idle_session(tmp_path) -> None
 
     agent = MagicMock()
     agent._session_locks = {}
-    agent.process_direct = AsyncMock()
+    agent.bus = MagicMock()
+    agent.bus.publish_inbound = AsyncMock()
 
     sessions = MagicMock()
     sessions.list_sessions.return_value = [
@@ -51,6 +52,7 @@ async def test_real_cron_fires_scanner_and_nudges_idle_session(tmp_path) -> None
                 idle_timeout_s=300,
                 cooldown_s=900,
                 scan_interval_s=1,
+                startup_grace_s=0,
                 quiet_hours=None,
                 timezone="UTC",
                 channels=("desktop_mate",),
@@ -63,11 +65,13 @@ async def test_real_cron_fires_scanner_and_nudges_idle_session(tmp_path) -> None
     finally:
         cron.stop()
 
-    agent.process_direct.assert_awaited_once()
-    call = agent.process_direct.await_args
-    assert call.kwargs["session_key"] == "desktop_mate:abc"
-    assert call.kwargs["channel"] == "desktop_mate"
-    assert call.kwargs["chat_id"] == "abc"
+    agent.bus.publish_inbound.assert_awaited_once()
+    msg = agent.bus.publish_inbound.await_args.args[0]
+    assert msg.session_key_override == "desktop_mate:abc"
+    assert msg.channel == "desktop_mate"
+    assert msg.chat_id == "abc"
+    assert msg.metadata.get("proactive") is True
+    assert msg.metadata.get("_wants_stream") is True
 
 
 async def test_real_cron_preserves_existing_on_job(tmp_path) -> None:
@@ -79,13 +83,17 @@ async def test_real_cron_preserves_existing_on_job(tmp_path) -> None:
     cron.on_job = user_callback
     await cron.start()
     try:
+        idle_agent = MagicMock(_session_locks={})
+        idle_agent.bus = MagicMock()
+        idle_agent.bus.publish_inbound = AsyncMock()
         install_idle_system_job(
-            agent=MagicMock(_session_locks={}, process_direct=AsyncMock()),
+            agent=idle_agent,
             sessions=MagicMock(list_sessions=MagicMock(return_value=[]), get_or_create=MagicMock()),
             cron=cron,
             config=IdleConfig(
                 enabled=True,
                 scan_interval_s=60,  # large so it doesn't race the user job
+                startup_grace_s=0,
                 quiet_hours=None,
                 timezone="UTC",
                 channels=("desktop_mate",),
