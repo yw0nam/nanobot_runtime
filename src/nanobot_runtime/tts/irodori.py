@@ -27,10 +27,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from nanobot_runtime.hooks.tts import TTSSynthesizer
 
-
-class IrodoriClient(TTSSynthesizer):
+class IrodoriClient:
     """Async HTTP client for Irodori TTS ``POST /synthesize`` endpoint."""
 
     def __init__(

@@ -31,9 +31,8 @@ sentences never consume a sequence number. When ``session_key`` is ``None``
 to a shared ``_default`` state bucket and emits a warning once.
 """
 import asyncio
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from loguru import logger
 from nanobot.agent.hook import AgentHook, AgentHookContext
@@ -57,41 +56,36 @@ class TTSChunk(BaseModel):
     )
 
 
-# ── Injected dependencies (ABCs) ─────────────────────────────────────────
+# ── Injected dependencies (Protocols) ────────────────────────────────────
 
 
-class SentenceChunker(ABC):
-    @abstractmethod
+class SentenceChunker(Protocol):
     def feed(self, delta: str) -> list[str]: ...
-
-    @abstractmethod
     def flush(self) -> str | None: ...
 
 
-class TextPreprocessor(ABC):
-    @abstractmethod
+class TextPreprocessor(Protocol):
     def process(self, sentence: str) -> tuple[str, str | None]:
         """Return (clean_text_for_display, emotion_tag_or_None)."""
 
 
-class EmotionMapper(ABC):
-    @abstractmethod
+class EmotionMapper(Protocol):
     def map(self, emotion: str | None) -> list[dict[str, Any]]: ...
 
 
-class TTSSynthesizer(ABC):
-    @abstractmethod
+class TTSSynthesizer(Protocol):
     async def synthesize(self, text: str) -> str | None:
         """Return base64-encoded audio (wav) or None on failure."""
 
 
-class TTSSink(ABC):
-    @abstractmethod
+class TTSSink(Protocol):
     async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
 
-    def is_enabled(self) -> bool:
-        """Return False to skip synthesis for this stream. Default: always enabled."""
-        return True
+    # Optional. When present and returning False, the hook skips synthesis
+    # entirely for this sentence — saving GPU / network traffic for clients
+    # that can't play audio. Sinks that don't implement this method are
+    # treated as "always enabled" for backward compatibility.
+    # def is_enabled(self) -> bool: ...
 
 
 # ── Per-session state ─────────────────────────────────────────────────────

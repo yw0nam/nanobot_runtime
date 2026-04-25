@@ -14,8 +14,6 @@ Given a sentence, returns ``(clean_text, emotion_tag_or_None)``:
 
 import re
 
-from nanobot_runtime.hooks.tts import TextPreprocessor as _TextPreprocessorBase
-
 _DEFAULT_EMOJI_SET: frozenset[str] = frozenset(
     [
         "😊",
@@ -41,7 +39,7 @@ _DEFAULT_EMOJI_SET: frozenset[str] = frozenset(
 )
 
 
-class Preprocessor(_TextPreprocessorBase):
+class Preprocessor:
     """Clean TTS-bound sentence text and extract first known emotion emoji."""
 
     def __init__(self, known_emojis: frozenset[str] | None = None) -> None:

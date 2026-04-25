@@ -21,14 +21,12 @@ from typing import Any
 import yaml
 from loguru import logger
 
-from nanobot_runtime.hooks.tts import EmotionMapper as _EmotionMapperBase
-
 _HARDCODED_DEFAULT: list[dict[str, Any]] = [
     {"duration": 0.3, "targets": {"neutral": 1.0}}
 ]
 
 
-class EmotionMapper(_EmotionMapperBase):
+class EmotionMapper:
     """Map emotion keyword/emoji → list of timeline keyframe dicts."""
 
     def __init__(self, config: dict[str, dict]) -> None:

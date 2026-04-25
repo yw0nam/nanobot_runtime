@@ -14,10 +14,8 @@ import re
 
 from fast_bunkai import FastBunkai
 
-from nanobot_runtime.hooks.tts import SentenceChunker as _SentenceChunkerBase
 
-
-class SentenceChunker(_SentenceChunkerBase):
+class SentenceChunker:
     """Buffer streaming deltas and yield sentence-terminated chunks.
 
     Methods:

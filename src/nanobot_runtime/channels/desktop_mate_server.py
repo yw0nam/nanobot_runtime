@@ -22,11 +22,10 @@ from nanobot_runtime.channels.desktop_mate_protocol import (
     NewChatFrame,
     parse_inbound,
 )
-from nanobot_runtime.channels.desktop_mate_base import _DesktopMateBase
 from nanobot_runtime.channels.desktop_mate_rest import parse_request_path, query_first
 
 
-class _DesktopMateServerMixin(_DesktopMateBase):
+class _DesktopMateServerMixin:
     """WebSocket server lifecycle and inbound message loop."""
 
     # ── Inbound Loop ──────────────────────────────────────────────────────
@@ -68,12 +67,12 @@ class _DesktopMateServerMixin(_DesktopMateBase):
                 assert isinstance(envelope, MessageFrame)
                 chat_id = envelope.chat_id
 
-            media_paths, reject_reason = self._decode_inbound_images(
+            media_paths, reject_reason = self._decode_inbound_images(  # type: ignore[attr-defined]
                 envelope.images, sender_id=sender_id,
             )
             if reject_reason is not None:
                 # new_chat rejections have no chat_id yet; FE correlates via reference_id.
-                await self._send_frame(
+                await self._send_frame(  # type: ignore[attr-defined]
                     connection,
                     ImageRejectedFrame(
                         chat_id=chat_id if isinstance(envelope, MessageFrame) else None,
@@ -83,12 +82,12 @@ class _DesktopMateServerMixin(_DesktopMateBase):
                 )
                 continue
 
-            self._attach(chat_id, connection)
-            self._tts_enabled_per_chat[chat_id] = bool(envelope.tts_enabled)
+            self._attach(chat_id, connection)  # type: ignore[attr-defined]
+            self._tts_enabled_per_chat[chat_id] = bool(envelope.tts_enabled)  # type: ignore[attr-defined]
             # On any non-happy exit, unlink decoded image files to avoid disk
             # leakage. Don't propagate the exception — the connection keeps serving.
             try:
-                await self._handle_message(
+                await self._handle_message(  # type: ignore[attr-defined]
                     sender_id=sender_id,
                     chat_id=chat_id,
                     content=envelope.content,
@@ -115,30 +114,30 @@ class _DesktopMateServerMixin(_DesktopMateBase):
         """Bind the WS server and serve until :meth:`stop` is called."""
         from websockets.asyncio.server import serve
 
-        self._running = True
-        self._stop_event = asyncio.Event()
+        self._running = True  # type: ignore[attr-defined]
+        self._stop_event = asyncio.Event()  # type: ignore[attr-defined]
 
         async def handler(connection: Any) -> None:
             request = getattr(connection, "request", None)
             raw_path = request.path if request else "/"
             _, query = parse_request_path(raw_path)
 
-            accepted = await self._handshake(connection, query)
+            accepted = await self._handshake(connection, query)  # type: ignore[attr-defined]
             if not accepted:
                 return
 
             client_id = (query_first(query, "client_id") or "").strip()
             if not client_id:
                 client_id = f"anon-{uuid.uuid4().hex[:12]}"
-            if not self.is_allowed(client_id):
+            if not self.is_allowed(client_id):  # type: ignore[attr-defined]
                 try:
                     await connection.close(code=4003, reason="forbidden")
                 except Exception:
                     logger.opt(exception=True).warning("desktop_mate: close(4003/forbidden) raised")
                 return
 
-            self._apply_connection_tts_override(connection, query)
-            await self._send_ready(connection, client_id=client_id)
+            self._apply_connection_tts_override(connection, query)  # type: ignore[attr-defined]
+            await self._send_ready(connection, client_id=client_id)  # type: ignore[attr-defined]
 
             try:
                 await self._connection_loop(connection, sender_id=client_id)
@@ -148,9 +147,9 @@ class _DesktopMateServerMixin(_DesktopMateBase):
                     client_id,
                 )
             finally:
-                self._detach_connection(connection)
+                self._detach_connection(connection)  # type: ignore[attr-defined]
 
-        config = self.config
+        config = self.config  # type: ignore[attr-defined]
         logger.info(
             "desktop_mate: listening on ws://{}:{}{}",
             config.host, config.port, config.path,
@@ -161,30 +160,30 @@ class _DesktopMateServerMixin(_DesktopMateBase):
                 handler,
                 config.host,
                 config.port,
-                process_request=self._dispatch_http,
+                process_request=self._dispatch_http,  # type: ignore[attr-defined]
                 ping_interval=config.ping_interval_s,
                 ping_timeout=config.ping_timeout_s,
                 max_size=config.max_message_bytes,
             ) as server:
-                self._server = server
-                stop_event = self._stop_event
+                self._server = server  # type: ignore[attr-defined]
+                stop_event = self._stop_event  # type: ignore[attr-defined]
                 assert stop_event is not None
                 await stop_event.wait()
 
-        self._server_task = asyncio.create_task(runner())
+        self._server_task = asyncio.create_task(runner())  # type: ignore[attr-defined]
         try:
-            await self._server_task
+            await self._server_task  # type: ignore[attr-defined]
         except asyncio.CancelledError:
             raise
 
     async def stop(self) -> None:
-        if not self._running:
+        if not self._running:  # type: ignore[attr-defined]
             return
-        self._running = False
-        stop_event = self._stop_event
+        self._running = False  # type: ignore[attr-defined]
+        stop_event = self._stop_event  # type: ignore[attr-defined]
         if stop_event is not None:
             stop_event.set()
-        server_task = self._server_task
+        server_task = self._server_task  # type: ignore[attr-defined]
         if server_task is not None:
             try:
                 await asyncio.wait_for(server_task, timeout=2.0)
@@ -193,7 +192,7 @@ class _DesktopMateServerMixin(_DesktopMateBase):
                 server_task.cancel()
             except Exception:
                 logger.opt(exception=True).warning("desktop_mate: server task ended with error during stop")
-            self._server_task = None
-        self._chat_conn.clear()
-        self._streams.clear()
-        self._current_stream_id = None
+            self._server_task = None  # type: ignore[attr-defined]
+        self._chat_conn.clear()  # type: ignore[attr-defined]
+        self._streams.clear()  # type: ignore[attr-defined]
+        self._current_stream_id = None  # type: ignore[attr-defined]

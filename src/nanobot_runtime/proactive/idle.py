@@ -8,9 +8,8 @@ active-turn, cooldown, re-validation race).
 
 Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
-from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -65,18 +64,14 @@ class IdleConfig(BaseModel):
     )
 
 
-class _SessionManagerLike(ABC):
-    @abstractmethod
+class _SessionManagerLike(Protocol):
     def list_sessions(self) -> list[dict[str, Any]]: ...
-
-    @abstractmethod
     def get_or_create(self, key: str) -> Any: ...
 
 
-class _AgentLike(ABC):
+class _AgentLike(Protocol):
     _session_locks: dict[str, Any]
 
-    @abstractmethod
     async def process_direct(
         self,
         content: str,
@@ -86,10 +81,9 @@ class _AgentLike(ABC):
     ) -> Any: ...
 
 
-class _CronLike(ABC):
+class _CronLike(Protocol):
     on_job: Any
 
-    @abstractmethod
     def register_system_job(self, job: Any) -> Any: ...
 
 
