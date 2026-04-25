@@ -30,33 +30,33 @@ sentences never consume a sequence number. When ``session_key`` is ``None``
 (caller didn't supply one — stale nanobot, or a test) the hook falls back
 to a shared ``_default`` state bucket and emits a warning once.
 """
-from __future__ import annotations
-
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from loguru import logger
 from nanobot.agent.hook import AgentHook, AgentHookContext
+from pydantic import BaseModel, ConfigDict, Field
 
 
-# ---------------------------------------------------------------------------
-# Data shape emitted to the sink (matches DMP's tts_chunk frame payload)
-# ---------------------------------------------------------------------------
+# ── Data shape emitted to the sink (matches DMP's tts_chunk frame payload)
 
 
-@dataclass(slots=True)
-class TTSChunk:
-    sequence: int
-    text: str
-    audio_base64: str | None
-    emotion: str | None
-    keyframes: list[dict[str, Any]] = field(default_factory=list)
+class TTSChunk(BaseModel):
+    """Data emitted to the TTS sink per completed sentence."""
+
+    model_config = ConfigDict(frozen=True)
+
+    sequence: int = Field(description="Zero-based index of this chunk within the current stream.")
+    text: str = Field(description="Cleaned sentence text sent to the TTS engine.")
+    audio_base64: str | None = Field(description="Base64-encoded WAV audio, or None on failure.")
+    emotion: str | None = Field(description="Detected emotion emoji/tag, or None.")
+    keyframes: list[dict[str, Any]] = Field(
+        default_factory=list, description="Animation keyframe dicts for the emotion."
+    )
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (Protocols)
-# ---------------------------------------------------------------------------
+# ── Injected dependencies (Protocols) ────────────────────────────────────
 
 
 class SentenceChunker(Protocol):
@@ -88,9 +88,7 @@ class TTSSink(Protocol):
     # def is_enabled(self) -> bool: ...
 
 
-# ---------------------------------------------------------------------------
-# Per-session state
-# ---------------------------------------------------------------------------
+# ── Per-session state ─────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -103,9 +101,7 @@ class _SessionState:
 _FALLBACK_SESSION_KEY = "__tts_hook_default__"
 
 
-# ---------------------------------------------------------------------------
-# Hook
-# ---------------------------------------------------------------------------
+# ── Hook ─────────────────────────────────────────────────────────────────
 
 
 class TTSHook(AgentHook):
@@ -182,9 +178,7 @@ class TTSHook(AgentHook):
         # for the same session starts clean (sequence back to 0, fresh chunker).
         self._states.pop(key, None)
 
-    # ------------------------------------------------------------------
-    # internals
-    # ------------------------------------------------------------------
+    # ── Internals ─────────────────────────────────────────────────────
 
     def _session_key(self, context: AgentHookContext) -> str:
         key = getattr(context, "session_key", None)

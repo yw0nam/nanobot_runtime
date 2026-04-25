@@ -8,8 +8,6 @@ State from ``DesktopMateChannel.__init__``: ``config``, ``_stop_event``,
 ``_send_ready``, ``_decode_inbound_images``, ``_attach``, ``_send_frame``,
 ``_detach_connection``, ``_handle_message``, and ``is_allowed``.
 """
-from __future__ import annotations
-
 import asyncio
 import uuid
 from pathlib import Path
@@ -30,7 +28,7 @@ from nanobot_runtime.channels.desktop_mate_rest import parse_request_path, query
 class _DesktopMateServerMixin:
     """WebSocket server lifecycle and inbound message loop."""
 
-    # -- Inbound loop ----------------------------------------------------------
+    # ── Inbound Loop ──────────────────────────────────────────────────────
 
     async def _connection_loop(
         self,
@@ -96,10 +94,10 @@ class _DesktopMateServerMixin:
                     media=media_paths or None,
                     metadata=base_metadata,
                 )
-            except Exception as exc:
+            except Exception:
                 logger.opt(exception=True).error(
-                    "desktop_mate: handle_message failed (chat_id={}): {}",
-                    chat_id, exc,
+                    "desktop_mate: handle_message failed (chat_id={})",
+                    chat_id,
                 )
                 for p in media_paths:
                     try:
@@ -110,7 +108,7 @@ class _DesktopMateServerMixin:
                             p, unlink_exc,
                         )
 
-    # -- Server lifecycle ------------------------------------------------------
+    # ── Server Lifecycle ──────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Bind the WS server and serve until :meth:`stop` is called."""
@@ -134,8 +132,8 @@ class _DesktopMateServerMixin:
             if not self.is_allowed(client_id):  # type: ignore[attr-defined]
                 try:
                     await connection.close(code=4003, reason="forbidden")
-                except Exception as e:
-                    logger.warning("desktop_mate: close(4003/forbidden) raised: {}", e)
+                except Exception:
+                    logger.opt(exception=True).warning("desktop_mate: close(4003/forbidden) raised")
                 return
 
             self._apply_connection_tts_override(connection, query)  # type: ignore[attr-defined]
@@ -143,10 +141,10 @@ class _DesktopMateServerMixin:
 
             try:
                 await self._connection_loop(connection, sender_id=client_id)
-            except Exception as e:
+            except Exception:
                 logger.opt(exception=True).warning(
-                    "desktop_mate: connection loop exited unexpectedly (client={}): {}",
-                    client_id, e,
+                    "desktop_mate: connection loop exited unexpectedly (client={})",
+                    client_id,
                 )
             finally:
                 self._detach_connection(connection)  # type: ignore[attr-defined]
@@ -192,8 +190,8 @@ class _DesktopMateServerMixin:
             except asyncio.TimeoutError:
                 logger.warning("desktop_mate: server task did not stop within 2s, cancelling")
                 server_task.cancel()
-            except Exception as e:
-                logger.warning("desktop_mate: server task ended with error during stop: {}", e)
+            except Exception:
+                logger.opt(exception=True).warning("desktop_mate: server task ended with error during stop")
             self._server_task = None  # type: ignore[attr-defined]
         self._chat_conn.clear()  # type: ignore[attr-defined]
         self._streams.clear()  # type: ignore[attr-defined]

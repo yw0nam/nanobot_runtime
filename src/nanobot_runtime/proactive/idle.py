@@ -8,14 +8,12 @@ active-turn, cooldown, re-validation race).
 
 Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from nanobot.cron.types import CronJob, CronPayload, CronSchedule
@@ -34,30 +32,36 @@ _DEFAULT_IDLE_PROMPT = (
 )
 
 
-@dataclass(frozen=True)
-class QuietHours:
+class QuietHours(BaseModel):
     """Local-time window during which idle nudges are suppressed entirely.
 
     ``start`` and ``end`` are ``HH:MM`` strings in the config timezone. If
     ``start > end`` the window spans midnight (e.g. ``22:00 → 06:00``).
     """
 
-    start: str
-    end: str
+    model_config = ConfigDict(frozen=True)
+
+    start: str = Field(description="HH:MM quiet-hours start in config timezone.")
+    end: str = Field(description="HH:MM quiet-hours end. If start > end, window spans midnight.")
 
 
-@dataclass
-class IdleConfig:
-    enabled: bool = True
-    idle_timeout_s: int = 300
-    cooldown_s: int = 900
-    scan_interval_s: int = 30
-    quiet_hours: QuietHours | None = None
-    timezone: str = "UTC"
-    channels: tuple[str, ...] = ("desktop_mate",)
-    idle_prompt: str = _DEFAULT_IDLE_PROMPT
-    # Reserved for Phase 5.5 (screen / process context injection).
-    context_providers: tuple[Callable[[], Awaitable[str]], ...] = field(default_factory=tuple)
+class IdleConfig(BaseModel):
+    """Configuration for the idle-watcher system job."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    enabled: bool = Field(default=True, description="Enable or disable the idle watcher entirely.")
+    idle_timeout_s: int = Field(default=300, description="Seconds of silence before a nudge is sent.")
+    cooldown_s: int = Field(default=900, description="Minimum seconds between nudges for the same session.")
+    scan_interval_s: int = Field(default=30, description="How often the watcher scans sessions (seconds).")
+    quiet_hours: "QuietHours | None" = Field(default=None, description="Time window during which nudges are suppressed.")
+    timezone: str = Field(default="UTC", description="IANA timezone name for quiet-hours evaluation.")
+    channels: tuple[str, ...] = Field(default=("desktop_mate",), description="Channel names that receive idle nudges.")
+    idle_prompt: str = Field(default=_DEFAULT_IDLE_PROMPT, description="Prompt template; {minutes} is substituted.")
+    context_providers: tuple[Callable[[], Awaitable[str]], ...] = Field(
+        default_factory=tuple,
+        description="Reserved for Phase 5.5 context injection.",
+    )
 
 
 class _SessionManagerLike(Protocol):
@@ -229,7 +233,7 @@ def install_idle_system_job(
     return scanner
 
 
-# ---------- helpers ----------------------------------------------------------
+# ── Helpers ──────────────────────────────────────────────────────────────
 
 
 def _in_quiet_hours(now: datetime, qh: QuietHours) -> bool:

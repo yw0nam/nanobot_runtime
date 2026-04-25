@@ -4,8 +4,6 @@ Validates count, MIME type, size, and base64 integrity; persists decoded
 images to the media directory. Every failure surfaces to the caller as an
 ``ImageRejectReason`` token so the FE can handle it without parsing prose.
 """
-from __future__ import annotations
-
 import binascii
 import re
 from pathlib import Path
@@ -99,11 +97,11 @@ def _decode_images(
             saved = save_base64_data_url(entry, media_dir, max_bytes=max_image_bytes)
         except FileSizeExceeded:
             return _abort("too_large", mime=mime, size_hint=len(entry))
-        except (binascii.Error, ValueError) as exc:
-            logger.debug("desktop_mate: decode failed (caller-fixable): {}", exc)
+        except (binascii.Error, ValueError):
+            logger.opt(exception=True).warning("desktop_mate: decode failed (caller-fixable)")
             return _abort("malformed", mime=mime, size_hint=len(entry))
-        except OSError as exc:
-            logger.opt(exception=True).error("desktop_mate: image persist failed: {}", exc)
+        except OSError:
+            logger.opt(exception=True).error("desktop_mate: image persist failed")
             return _abort("io_error", mime=mime, size_hint=len(entry))
         if saved is None:
             return _abort("malformed", mime=mime, size_hint=len(entry))

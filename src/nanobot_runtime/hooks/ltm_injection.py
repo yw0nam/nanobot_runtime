@@ -4,8 +4,6 @@ Fires on `before_iteration` at the start of each user turn (iteration==0),
 searches mem0 with the latest user utterance, and appends a summary block to
 the first system message so the LLM can ground the reply in persisted facts.
 """
-from __future__ import annotations
-
 from typing import Any, Protocol
 
 from loguru import logger

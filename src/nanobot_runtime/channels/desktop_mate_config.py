@@ -1,14 +1,11 @@
-"""Config dataclass and helpers for DesktopMateChannel."""
-from __future__ import annotations
-
-from dataclasses import dataclass, field
+"""Config model and helpers for DesktopMateChannel."""
 from typing import Any
 
 from loguru import logger
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class DesktopMateConfig:
+class DesktopMateConfig(BaseModel):
     """Runtime configuration for DesktopMateChannel.
 
     Clients connect at ``ws://{host}:{port}{path}?token=<token>&client_id=<id>``.
@@ -16,21 +13,34 @@ class DesktopMateConfig:
     ``client_id`` becomes the nanobot ``sender_id`` for ``allow_from`` authorization.
     """
 
-    enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 8765
-    path: str = "/ws"
-    token: str = ""
-    allow_from: list[str] = field(default_factory=lambda: ["*"])
-    streaming: bool = True
-    ping_interval_s: float | None = 20.0
-    ping_timeout_s: float | None = 20.0
+    enabled: bool = Field(default=True, description="Whether the channel is active.")
+    host: str = Field(default="127.0.0.1", description="Bind address for the WebSocket server.")
+    port: int = Field(default=8765, description="TCP port the WebSocket server listens on.")
+    path: str = Field(default="/ws", description="URL path for the WebSocket endpoint.")
+    token: str = Field(default="", description="Static bearer token; empty means no auth required.")
+    allow_from: list[str] = Field(
+        default_factory=lambda: ["*"],
+        description="Allowlist of client_id values; '*' accepts any client.",
+    )
+    streaming: bool = Field(default=True, description="Enable streaming delta frames.")
+    ping_interval_s: float | None = Field(
+        default=20.0, description="WebSocket ping interval in seconds; None disables."
+    )
+    ping_timeout_s: float | None = Field(
+        default=20.0, description="WebSocket ping timeout in seconds; None disables."
+    )
     # Must fit _MAX_IMAGES_PER_MESSAGE × _MAX_IMAGE_BYTES base64-encoded (×4/3)
     # ≈ 53 MB. 60 MB gives headroom for JSON framing.
-    max_message_bytes: int = 60 * 1024 * 1024
+    max_message_bytes: int = Field(
+        default=60 * 1024 * 1024,
+        description="Maximum inbound WebSocket message size in bytes.",
+    )
     # Path to the YAML file whose ``emotion_motion_map`` keys enumerate the
     # emojis to strip from outbound ``delta`` text.
-    emotion_map_path: str | None = None
+    emotion_map_path: str | None = Field(
+        default=None,
+        description="Path to the YAML emotion-motion map; None disables emoji stripping.",
+    )
 
 
 # Accept either snake_case (internal) or camelCase (nanobot.json convention).
@@ -64,7 +74,7 @@ def _coerce_config(section: Any) -> DesktopMateConfig:
         )
         raw = {}
 
-    known = {f.name for f in DesktopMateConfig.__dataclass_fields__.values()}
+    known = set(DesktopMateConfig.model_fields)
     normalised: dict[str, Any] = {}
     for key, value in raw.items():
         target = _CAMEL_TO_SNAKE.get(key, key)

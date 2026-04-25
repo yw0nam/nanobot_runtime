@@ -11,8 +11,6 @@ Auth model is intentionally simpler than nanobot's TTL-bound token pool:
 we reuse the static ``?token=`` used for the WebSocket handshake.
 Rotating tokens can layer on later without changing the REST shape.
 """
-from __future__ import annotations
-
 import email.utils
 import http
 import json
@@ -107,9 +105,7 @@ def http_error(status: int, message: str | None = None) -> Response:
     return http_response(body, status=status)
 
 
-# ---------------------------------------------------------------------------
-# Session REST handlers
-# ---------------------------------------------------------------------------
+# ── Session REST Handlers ─────────────────────────────────────────────────
 
 
 def _is_dm_session(key: str) -> bool:
@@ -133,8 +129,8 @@ def handle_sessions_list(token: str, session_manager: Any, request: WsRequest) -
         return http_error(503, "session manager unavailable")
     try:
         sessions = session_manager.list_sessions()
-    except Exception as exc:
-        logger.opt(exception=True).error("desktop_mate: list_sessions raised: {}", exc)
+    except Exception:
+        logger.opt(exception=True).error("desktop_mate: list_sessions raised")
         return http_error(500, "internal error")
     cleaned = [
         {k: v for k, v in s.items() if k != "path"}
@@ -158,8 +154,8 @@ def handle_session_messages(
         return http_error(404, "session not found")
     try:
         data = session_manager.read_session_file(decoded)
-    except Exception as exc:
-        logger.opt(exception=True).error("desktop_mate: read_session_file raised: {}", exc)
+    except Exception:
+        logger.opt(exception=True).error("desktop_mate: read_session_file raised")
         return http_error(500, "internal error")
     if data is None:
         return http_error(404, "session not found")
@@ -180,8 +176,8 @@ def handle_session_delete(
         return http_error(404, "session not found")
     try:
         deleted = session_manager.delete_session(decoded)
-    except Exception as exc:
-        logger.opt(exception=True).error("desktop_mate: delete_session raised: {}", exc)
+    except Exception:
+        logger.opt(exception=True).error("desktop_mate: delete_session raised")
         return http_error(500, "internal error")
     return http_json_response({"deleted": bool(deleted)})
 

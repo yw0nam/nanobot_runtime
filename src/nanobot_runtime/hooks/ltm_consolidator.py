@@ -17,8 +17,6 @@ loop.consolidator in place. This matters because:
 Both paths therefore route through the LTM-saving wrapper without needing
 to reconstruct the inner Consolidator or re-wire AutoCompact.
 """
-from __future__ import annotations
-
 import asyncio
 from typing import Any, Protocol
 

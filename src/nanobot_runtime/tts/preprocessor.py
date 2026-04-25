@@ -12,8 +12,6 @@ Given a sentence, returns ``(clean_text, emotion_tag_or_None)``:
       TTS server consumes it for emotion control.
 """
 
-from __future__ import annotations
-
 import re
 
 _DEFAULT_EMOJI_SET: frozenset[str] = frozenset(

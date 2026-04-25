@@ -15,8 +15,6 @@ When an emotion is None, empty, or unregistered, returns the ``default``
 entry's keyframes or a hardcoded neutral fallback.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -51,12 +49,10 @@ class EmotionMapper:
             return self._default
         return entry.get("keyframes") or self._default
 
-    # ------------------------------------------------------------------
-    # Factory
-    # ------------------------------------------------------------------
+    # ── Factory ───────────────────────────────────────────────────────
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> EmotionMapper:
+    def from_yaml(cls, path: str | Path) -> "EmotionMapper":
         """Load the ``emotion_motion_map`` block from a YAML file."""
         p = Path(path)
         try:
