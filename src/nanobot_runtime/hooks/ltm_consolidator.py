@@ -18,12 +18,14 @@ Both paths therefore route through the LTM-saving wrapper without needing
 to reconstruct the inner Consolidator or re-wire AutoCompact.
 """
 import asyncio
-from typing import Any, Protocol
+from abc import ABC, abstractmethod
+from typing import Any
 
 from loguru import logger
 
 
-class _LTMAddClient(Protocol):
+class _LTMAddClient(ABC):
+    @abstractmethod
     async def add_memory(
         self,
         content: str,

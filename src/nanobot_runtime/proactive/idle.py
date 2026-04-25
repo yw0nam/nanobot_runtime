@@ -8,8 +8,9 @@ active-turn, cooldown, re-validation race).
 
 Installed via :func:`install_idle_system_job` from the gateway launcher.
 """
+from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -41,8 +42,8 @@ class QuietHours(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    start: str = Field(description="Quiet-hours start time as HH:MM string.")
-    end: str = Field(description="Quiet-hours end time as HH:MM string.")
+    start: str = Field(description="HH:MM quiet-hours start in config timezone.")
+    end: str = Field(description="HH:MM quiet-hours end. If start > end, window spans midnight.")
 
 
 class IdleConfig(BaseModel):
@@ -50,43 +51,32 @@ class IdleConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    enabled: bool = Field(default=True, description="Whether the idle watcher is active.")
-    idle_timeout_s: int = Field(
-        default=300, description="Seconds of silence before a session is considered idle."
-    )
-    cooldown_s: int = Field(
-        default=900, description="Seconds to wait after a nudge before sending another."
-    )
-    scan_interval_s: int = Field(
-        default=30, description="How often (in seconds) the idle scanner runs."
-    )
-    quiet_hours: "QuietHours | None" = Field(
-        default=None, description="Time window during which nudges are suppressed."
-    )
+    enabled: bool = Field(default=True, description="Enable or disable the idle watcher entirely.")
+    idle_timeout_s: int = Field(default=300, description="Seconds of silence before a nudge is sent.")
+    cooldown_s: int = Field(default=900, description="Minimum seconds between nudges for the same session.")
+    scan_interval_s: int = Field(default=30, description="How often the watcher scans sessions (seconds).")
+    quiet_hours: "QuietHours | None" = Field(default=None, description="Time window during which nudges are suppressed.")
     timezone: str = Field(default="UTC", description="IANA timezone name for quiet-hours evaluation.")
-    channels: tuple[str, ...] = Field(
-        default=("desktop_mate",),
-        description="Channel names on which idle nudges may be delivered.",
-    )
-    idle_prompt: str = Field(
-        default=_DEFAULT_IDLE_PROMPT,
-        description="Prompt template; ``{minutes}`` is substituted with elapsed idle minutes.",
-    )
-    # Reserved for Phase 5.5 (screen / process context injection).
+    channels: tuple[str, ...] = Field(default=("desktop_mate",), description="Channel names that receive idle nudges.")
+    idle_prompt: str = Field(default=_DEFAULT_IDLE_PROMPT, description="Prompt template; {minutes} is substituted.")
     context_providers: tuple[Callable[[], Awaitable[str]], ...] = Field(
         default_factory=tuple,
-        description="Async callables that supply extra context for the nudge prompt.",
+        description="Reserved for Phase 5.5 context injection.",
     )
 
 
-class _SessionManagerLike(Protocol):
+class _SessionManagerLike(ABC):
+    @abstractmethod
     def list_sessions(self) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
     def get_or_create(self, key: str) -> Any: ...
 
 
-class _AgentLike(Protocol):
+class _AgentLike(ABC):
     _session_locks: dict[str, Any]
 
+    @abstractmethod
     async def process_direct(
         self,
         content: str,
@@ -96,9 +86,10 @@ class _AgentLike(Protocol):
     ) -> Any: ...
 
 
-class _CronLike(Protocol):
+class _CronLike(ABC):
     on_job: Any
 
+    @abstractmethod
     def register_system_job(self, job: Any) -> Any: ...
 
 

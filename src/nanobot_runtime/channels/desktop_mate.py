@@ -36,7 +36,7 @@ from nanobot_runtime.channels.desktop_mate_protocol import (
 from nanobot_runtime.channels.desktop_mate_rest import dispatch_http, parse_request_path, query_first
 from nanobot_runtime.channels.desktop_mate_server import _DesktopMateServerMixin
 from nanobot_runtime.channels.desktop_mate_tts import _DesktopMateTTSMixin
-from nanobot_runtime.hooks.tts import TTSChunk
+from nanobot_runtime.hooks.tts import TTSChunk, TTSSink
 from nanobot_runtime.tts.emotion_mapper import EmotionMapper
 
 
@@ -272,7 +272,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
 # ── Lazy TTS Sink ──────────────────────────────────────────────────────────
 
 
-class LazyChannelTTSSink:
+class LazyChannelTTSSink(TTSSink):
     """TTSSink that resolves the active DesktopMateChannel at send time.
 
     Avoids ordering constraints between hook factory and channel construction.
