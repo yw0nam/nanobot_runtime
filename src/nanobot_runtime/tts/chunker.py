@@ -66,7 +66,7 @@ class SentenceChunker:
         self._buffer = self._tool_call_pattern.sub("", self._buffer)
 
         result: list[str] = []
-        while any(c in self._SENTENCE_ENDERS for c in self._buffer):
+        while True:
             positions = self._fb.find_eos(self._buffer)
             real_positions = [
                 p
@@ -107,7 +107,7 @@ class SentenceChunker:
 
     def _filter_reasoning_stream(self, chunk: str) -> str:
         parts = self._reasoning_pattern.split(chunk)
-        filtered = ""
+        out: list[str] = []
         for part in parts:
             if not part:
                 continue
@@ -117,8 +117,8 @@ class SentenceChunker:
             elif lowered == "</think>":
                 self._inside_reasoning = False
             elif not self._inside_reasoning:
-                filtered += part
-        return filtered
+                out.append(part)
+        return "".join(out)
 
     def _reset(self) -> None:
         self._buffer = ""
