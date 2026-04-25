@@ -19,15 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot_runtime.channels.desktop_mate import (
+from nanobot_runtime.services.channels.desktop_mate import (
     DesktopMateChannel,
     DesktopMateConfig,
     _reset_registry_for_tests,
 )
-from nanobot_runtime.hooks.tts import TTSChunk, TTSHook
-from nanobot_runtime.tts.chunker import SentenceChunker
-from nanobot_runtime.tts.emotion_mapper import EmotionMapper
-from nanobot_runtime.tts.preprocessor import Preprocessor
+from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook
+from nanobot_runtime.services.tts.chunker import SentenceChunker
+from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
+from nanobot_runtime.services.tts.preprocessor import Preprocessor
 
 
 class FakeConnection:

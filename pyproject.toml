@@ -34,7 +34,7 @@ packages = ["src/nanobot_runtime"]
 # ``nanobot.channels`` entry_point group. The section key in nanobot.json
 # (``channels.desktop_mate``) must match the entry_point name below.
 [project.entry-points."nanobot.channels"]
-desktop_mate = "nanobot_runtime.channels.desktop_mate:DesktopMateChannel"
+desktop_mate = "nanobot_runtime.services.channels.desktop_mate:DesktopMateChannel"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

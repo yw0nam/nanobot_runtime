@@ -26,7 +26,7 @@ from nanobot.agent.hook import AgentHook
 from nanobot.agent.loop import AgentLoop
 from nanobot.channels.manager import ChannelManager
 
-from nanobot_runtime.proactive.idle import IDLE_ASYNCIO_TASK_ATTR
+from nanobot_runtime.services.proactive.idle import IDLE_ASYNCIO_TASK_ATTR
 
 _SUPPORTED_PREFIXES = ("0.1.5",)
 
@@ -60,7 +60,7 @@ def _install_run_patch() -> None:
     """Wrap ``AgentLoop.run`` to spawn a stashed idle-watcher task once.
 
     The watcher coroutine factory is set by
-    :func:`nanobot_runtime.proactive.idle.install_idle_asyncio_task` during
+    :func:`nanobot_runtime.services.proactive.idle.install_idle_asyncio_task` during
     ``hooks_factory``. We can't ``asyncio.create_task`` it from there
     because ``__init__`` runs synchronously before the event loop is up.
     By the time ``run`` is awaited, ``cli/commands.py`` has finished
