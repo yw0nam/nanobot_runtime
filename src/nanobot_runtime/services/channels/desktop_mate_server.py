@@ -22,7 +22,7 @@ from nanobot_runtime.models.desktop_mate import (
     NewChatFrame,
     parse_inbound,
 )
-from nanobot_runtime.services.channels.desktop_mate_rest import parse_request_path, query_first
+from nanobot_runtime.clients.desktop_mate_rest import parse_request_path, query_first
 
 
 class _DesktopMateServerMixin:

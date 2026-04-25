@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from nanobot_runtime.services.hooks.ltm_client import LTMMCPClient
+from nanobot_runtime.clients.ltm import LTMMCPClient
 
 pytestmark = pytest.mark.integration
 

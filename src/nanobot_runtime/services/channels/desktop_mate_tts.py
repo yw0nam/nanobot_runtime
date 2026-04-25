@@ -13,7 +13,7 @@ from loguru import logger
 
 from nanobot_runtime.config.desktop_mate import _parse_bool_flag
 from nanobot_runtime.models.desktop_mate import TTSChunkFrame
-from nanobot_runtime.services.channels.desktop_mate_rest import query_first
+from nanobot_runtime.clients.desktop_mate_rest import query_first
 from nanobot_runtime.services.hooks.tts import TTSChunk
 
 

@@ -2,7 +2,7 @@
 from nanobot.agent.hook import AgentHook
 
 from nanobot_runtime.services.hooks.ltm_args import LTMArgumentsHook
-from nanobot_runtime.services.hooks.ltm_client import LTMMCPClient
+from nanobot_runtime.clients.ltm import LTMMCPClient
 from nanobot_runtime.services.hooks.ltm_consolidator import (
     LTMSavingConsolidator,
     install_ltm_saving,

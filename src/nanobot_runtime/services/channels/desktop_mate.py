@@ -33,7 +33,7 @@ from nanobot_runtime.models.desktop_mate import (
     StreamEndFrame,
     StreamStartFrame,
 )
-from nanobot_runtime.services.channels.desktop_mate_rest import dispatch_http, parse_request_path, query_first
+from nanobot_runtime.clients.desktop_mate_rest import dispatch_http, parse_request_path, query_first
 from nanobot_runtime.services.channels.desktop_mate_server import _DesktopMateServerMixin
 from nanobot_runtime.services.channels.desktop_mate_tts import _DesktopMateTTSMixin
 from nanobot_runtime.services.hooks.tts import TTSChunk

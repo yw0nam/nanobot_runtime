@@ -7,5 +7,5 @@ EmotionMapper, TTSSynthesizer) using logic ported from DesktopMatePlus.
 
 from nanobot_runtime.services.tts.chunker import SentenceChunker
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
-from nanobot_runtime.services.tts.irodori import IrodoriClient
+from nanobot_runtime.clients.irodori import IrodoriClient
 from nanobot_runtime.services.tts.preprocessor import Preprocessor

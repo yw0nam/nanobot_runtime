@@ -11,7 +11,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from nanobot_runtime.services.tts.irodori import IrodoriClient
+from nanobot_runtime.clients.irodori import IrodoriClient
 
 
 @pytest.fixture
