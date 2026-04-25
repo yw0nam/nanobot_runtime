@@ -6,8 +6,6 @@ place of `user_id`, causing empty search results). This hook rewrites
 those two arguments just before tool dispatch, after the model has
 already decided which tool to call.
 """
-from __future__ import annotations
-
 from nanobot.agent.hook import AgentHook, AgentHookContext
 
 _LTM_TOOL_PREFIX = "mcp_ltm_"

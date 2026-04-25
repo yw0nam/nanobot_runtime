@@ -20,8 +20,6 @@ Request shape matches DMP's ``_post_synthesize``::
     optional multipart file: reference_audio = {ref_audio_dir}/{reference_id}/merged_audio.mp3
 """
 
-from __future__ import annotations
-
 import base64
 from pathlib import Path
 from typing import Any
@@ -56,9 +54,7 @@ class IrodoriClient:
         self.cfg_scale_speaker = cfg_scale_speaker
         self.seed = seed
 
-    # ------------------------------------------------------------------
-    # TTSSynthesizer protocol
-    # ------------------------------------------------------------------
+    # ── TTSSynthesizer Protocol ───────────────────────────────────────
 
     async def synthesize(self, text: str) -> str | None:
         tts_text = text.strip() if text else ""
@@ -81,9 +77,7 @@ class IrodoriClient:
             return None
         return base64.b64encode(audio_bytes).decode("utf-8")
 
-    # ------------------------------------------------------------------
-    # internals
-    # ------------------------------------------------------------------
+    # ── Internals ─────────────────────────────────────────────────────
 
     def _resolve_reference_audio(self) -> Path | None:
         if self.reference_id is None:

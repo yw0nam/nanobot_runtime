@@ -10,12 +10,9 @@ stream, and supports a ``min_chunk_length`` to coalesce very short
 sentences.
 """
 
-from __future__ import annotations
-
 import re
 
 from fast_bunkai import FastBunkai
-from loguru import logger
 
 
 class SentenceChunker:
@@ -50,9 +47,7 @@ class SentenceChunker:
             r"\{\s*\'type\'\s*:\s*\'tool_call\'[\s\S]*?\}\}"
         )
 
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
+    # ── Public API ────────────────────────────────────────────────────
 
     def feed(self, delta: str) -> list[str]:
         if not delta:
@@ -89,8 +84,6 @@ class SentenceChunker:
             if not emitted:
                 break
 
-        if result:
-            logger.debug("SentenceChunker emitted {} chunks", len(result))
         return result
 
     def flush(self) -> str | None:
@@ -101,9 +94,7 @@ class SentenceChunker:
             return None
         return remaining
 
-    # ------------------------------------------------------------------
-    # internals
-    # ------------------------------------------------------------------
+    # ── Internals ─────────────────────────────────────────────────────
 
     def _filter_reasoning_stream(self, chunk: str) -> str:
         parts = self._reasoning_pattern.split(chunk)

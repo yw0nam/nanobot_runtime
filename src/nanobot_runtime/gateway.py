@@ -8,8 +8,6 @@ patch applies in-process to the AgentLoop constructed by the CLI.
 
 Pinned to nanobot 0.1.5.x — version drift fails loud at startup.
 """
-from __future__ import annotations
-
 import inspect
 import os
 from typing import Any, Callable
@@ -103,7 +101,7 @@ def _install_channel_manager_patch() -> None:
                 cls.__init__ = orig  # type: ignore[method-assign]
 
     ChannelManager._init_channels = _patched_init_channels  # type: ignore[assignment]
-    logger.debug(
+    logger.info(
         "nanobot_runtime: patched ChannelManager._init_channels for "
         "generic session_manager injection"
     )

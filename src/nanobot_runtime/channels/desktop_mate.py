@@ -9,8 +9,6 @@ via the TTS Barrier) still have a chat_id to route to.
 
 Auth: single static token against ``?token=`` in the WS URL.
 """
-from __future__ import annotations
-
 import asyncio
 import re
 import time
@@ -41,14 +39,8 @@ from nanobot_runtime.channels.desktop_mate_tts import _DesktopMateTTSMixin
 from nanobot_runtime.hooks.tts import TTSChunk
 from nanobot_runtime.tts.emotion_mapper import EmotionMapper
 
-# Re-export for callers that import DesktopMateConfig from this module.
-__all__ = ["DesktopMateConfig", "DesktopMateChannel", "LazyChannelTTSSink",
-           "get_desktop_mate_channel"]
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
+# ── Registry ─────────────────────────────────────────────────────────────
 
 # Single-process registry so LazyChannelTTSSink can resolve the channel at
 # send time without a shared construction reference between the channel
@@ -72,9 +64,7 @@ def _reset_registry_for_tests() -> None:
     _LATEST_CHANNEL = None
 
 
-# ---------------------------------------------------------------------------
-# Channel
-# ---------------------------------------------------------------------------
+# ── Channel ──────────────────────────────────────────────────────────────
 
 
 class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChannel):
@@ -129,7 +119,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         # Media directory resolved lazily; tests can override by assigning _media_dir.
         self._media_dir: Path | None = None
 
-    # -- Connection bookkeeping --------------------------------------------
+    # ── Connection Bookkeeping ───────────────────────────────────────────
 
     def _attach(self, chat_id: str, connection: Any) -> None:
         self._chat_conn[chat_id] = connection
@@ -146,7 +136,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
                 if self._current_stream_id == sid:
                     self._current_stream_id = None
 
-    # -- Image intake ------------------------------------------------------
+    # ── Image Intake ─────────────────────────────────────────────────────
 
     def _resolve_media_dir(self) -> Path:
         if self._media_dir is not None:
@@ -168,14 +158,14 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             max_image_bytes=self._max_image_bytes,
         )
 
-    # -- Frame helpers -----------------------------------------------------
+    # ── Frame Helpers ─────────────────────────────────────────────────────
 
     async def _send_frame(self, connection: Any, frame: BaseModel) -> None:
         raw = frame.model_dump_json(exclude_none=True)
         try:
             await connection.send(raw)
-        except Exception as e:
-            logger.warning("desktop_mate: send failed, dropping connection: {}", e)
+        except Exception:
+            logger.opt(exception=True).warning("desktop_mate: send failed, dropping connection")
             self._detach_connection(connection)
 
     async def _send_ready(self, connection: Any, *, client_id: str) -> str:
@@ -187,7 +177,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         )
         return connection_id
 
-    # -- Outbound ----------------------------------------------------------
+    # ── Outbound ──────────────────────────────────────────────────────────
 
     async def send(self, msg: OutboundMessage) -> None:
         conn = self._chat_conn.get(msg.chat_id)
@@ -255,12 +245,12 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             ),
         )
 
-    # -- REST surface ------------------------------------------------------
+    # ── REST Surface ──────────────────────────────────────────────────────
 
     async def _dispatch_http(self, connection: Any, request: WsRequest) -> Any:
         return dispatch_http(self.config.token, self._session_manager, self.config.path, request)
 
-    # -- Auth / handshake --------------------------------------------------
+    # ── Auth / Handshake ──────────────────────────────────────────────────
 
     def _authorize_token(self, supplied: str | None) -> bool:
         expected = (self.config.token or "").strip()
@@ -273,15 +263,13 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         if not self._authorize_token(query_first(query, "token")):
             try:
                 await connection.close(code=4003, reason="invalid token")
-            except Exception as e:
-                logger.debug("desktop_mate: close after bad token raised: {}", e)
+            except Exception:
+                logger.opt(exception=True).warning("desktop_mate: close after bad token raised")
             return False
         return True
 
 
-# ---------------------------------------------------------------------------
-# Lazy TTS sink
-# ---------------------------------------------------------------------------
+# ── Lazy TTS Sink ──────────────────────────────────────────────────────────
 
 
 class LazyChannelTTSSink:

@@ -24,8 +24,6 @@ channel layer so every failure mode surfaces to the client as an
 particular must not fail at the Pydantic boundary, because a schema
 ValidationError would be silently dropped by the inbound loop).
 """
-from __future__ import annotations
-
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
@@ -43,9 +41,7 @@ from pydantic import (
 _MAX_IMAGES_PER_MESSAGE = 4
 
 
-# ---------------------------------------------------------------------------
-# Outbound frames
-# ---------------------------------------------------------------------------
+# ── Outbound Frames ──────────────────────────────────────────────────────
 
 
 class _OutboundBase(BaseModel):
@@ -159,9 +155,7 @@ class TTSChunkFrame(_OutboundBase):
         return raw
 
 
-# ---------------------------------------------------------------------------
-# Inbound frames
-# ---------------------------------------------------------------------------
+# ── Inbound Frames ───────────────────────────────────────────────────────
 
 
 class _InboundBase(BaseModel):
