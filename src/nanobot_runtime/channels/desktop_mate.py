@@ -108,6 +108,11 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         # synthesis still runs. See migration-todo §3-C.α).
         # chat_id -> bool; absent == True (default enabled).
         self._tts_enabled_per_chat: dict[str, bool] = {}
+        # chat_id -> reference_id (voice id) most recently sent by the FE.
+        # Survives across turns within a session so proactive nudges (which
+        # carry no envelope) can reuse the user's chosen voice. ``None``
+        # means "use the synthesizer's default".
+        self._reference_id_per_chat: dict[str, str | None] = {}
         # connection id() -> bool; takes precedence over per-chat flags
         # so URL ``?tts=0`` overrides per-message toggles for the whole socket.
         self._tts_enabled_per_conn: dict[int, bool] = {}
@@ -129,6 +134,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             if conn is connection:
                 self._chat_conn.pop(cid, None)
                 self._tts_enabled_per_chat.pop(cid, None)
+                self._reference_id_per_chat.pop(cid, None)
         self._tts_enabled_per_conn.pop(id(connection), None)
         for sid, (cid, _) in list(self._streams.items()):
             if cid not in self._chat_conn:
@@ -292,3 +298,22 @@ class LazyChannelTTSSink:
         except RuntimeError:
             return
         await channel.send_tts_chunk(chunk)
+
+    def get_reference_id_for_session(self, session_key: str | None) -> str | None:
+        """Resolve the voice for ``session_key`` via the active channel.
+
+        ``session_key`` follows the nanobot ``"<channel>:<chat_id>"`` form. Only
+        ``desktop_mate:*`` keys can be resolved here; anything else (or a
+        missing channel) returns ``None`` so the synthesizer falls back to its
+        constructor default.
+        """
+        if not session_key:
+            return None
+        prefix, _, chat_id = session_key.partition(":")
+        if prefix != "desktop_mate" or not chat_id:
+            return None
+        try:
+            channel = get_desktop_mate_channel()
+        except RuntimeError:
+            return None
+        return channel.reference_id_for_chat_id(chat_id)

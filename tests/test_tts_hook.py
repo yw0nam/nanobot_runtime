@@ -71,13 +71,15 @@ class _FakeSynthesizer:
 
     def __init__(self, latency: float = 0.0, fail_on: set[str] | None = None) -> None:
         self.calls: list[str] = []
+        self.ref_calls: list[str | None] = []
         self._latency = latency
         self._fail_on = fail_on or set()
 
-    async def synthesize(self, text: str) -> str | None:
+    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
         if self._latency:
             await asyncio.sleep(self._latency)
         self.calls.append(text)
+        self.ref_calls.append(reference_id)
         if text in self._fail_on:
             raise RuntimeError(f"TTS synth failed for: {text}")
         return f"b64::{text}"
@@ -357,3 +359,87 @@ async def test_sink_without_is_enabled_defaults_to_enabled() -> None:
 
     assert synth.calls == ["Hello there."]
     assert len(sink.chunks) == 1
+
+
+# --------------------------------------------------------------------------
+# reference_id resolver
+# --------------------------------------------------------------------------
+
+
+async def test_reference_id_resolver_passes_voice_to_synthesizer() -> None:
+    """When configured, the resolver's return value reaches synthesize()."""
+    sink = _FakeSink()
+    synth = _FakeSynthesizer()
+    seen: list[str | None] = []
+
+    def resolver(session_key: str | None) -> str | None:
+        seen.append(session_key)
+        return "alice"
+
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+        reference_id_resolver=resolver,
+    )
+
+    ctx = _ctx(session_key="desktop_mate:abc")
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    assert seen == ["desktop_mate:abc"]
+    assert synth.ref_calls == ["alice"]
+
+
+async def test_reference_id_resolver_returning_none_falls_through() -> None:
+    """``None`` return must be passed to synthesize so it uses its default."""
+    sink = _FakeSink()
+    synth = _FakeSynthesizer()
+
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+        reference_id_resolver=lambda _k: None,
+    )
+
+    await hook.on_stream(_ctx(), "Hi.")
+    await hook.on_stream_end(_ctx(), resuming=False)
+
+    assert synth.ref_calls == [None]
+
+
+async def test_reference_id_resolver_exception_is_swallowed() -> None:
+    """A buggy resolver must not block synthesis — synth runs with reference_id=None."""
+    sink = _FakeSink()
+    synth = _FakeSynthesizer()
+
+    def boom(_k: str | None) -> str | None:
+        raise RuntimeError("resolver bug")
+
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+        reference_id_resolver=boom,
+    )
+
+    await hook.on_stream(_ctx(), "Hi.")
+    await hook.on_stream_end(_ctx(), resuming=False)
+
+    assert synth.ref_calls == [None]
+    assert len(sink.chunks) == 1
+
+
+async def test_no_resolver_passes_none_to_synthesize() -> None:
+    """Backward compat: hooks built without a resolver must not pass spurious values."""
+    hook, sink, synth = _make_hook()
+    await hook.on_stream(_ctx(), "Hi.")
+    await hook.on_stream_end(_ctx(), resuming=False)
+    assert synth.ref_calls == [None]

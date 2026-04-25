@@ -44,6 +44,15 @@ class _DesktopMateTTSMixin:
                 return conn_flag
         return self._tts_enabled_per_chat.get(chat_id, True)  # type: ignore[attr-defined]
 
+    def reference_id_for_chat_id(self, chat_id: str) -> str | None:
+        """Return the FE-supplied voice for ``chat_id``, or None if unknown.
+
+        Populated by the inbound server loop on every ``new_chat`` / ``message``
+        envelope, so a session that has ever been touched keeps its voice for
+        subsequent turns — including proactive nudges that bypass the FE.
+        """
+        return self._reference_id_per_chat.get(chat_id)  # type: ignore[attr-defined]
+
     def is_tts_enabled_for_current_stream(self) -> bool:
         """Return False when no desktop_mate stream is currently registered.
 

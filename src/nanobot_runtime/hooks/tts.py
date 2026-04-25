@@ -74,8 +74,20 @@ class EmotionMapper(Protocol):
 
 
 class TTSSynthesizer(Protocol):
-    async def synthesize(self, text: str) -> str | None:
-        """Return base64-encoded audio (wav) or None on failure."""
+    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
+        """Return base64-encoded audio (wav) or None on failure.
+
+        ``reference_id`` is an optional per-call voice override. ``None``
+        means "use the synthesizer's default"; an empty string forces no
+        reference even when the synthesizer has a baked-in default.
+        """
+
+
+# Resolves a session_key (``"desktop_mate:<chat_id>"``-style) to the voice
+# to use for that session, or ``None`` to fall back to the synthesizer's
+# default. The hook calls this *once per sentence dispatch*, so the resolver
+# may consult mutable channel state without stale-cache concerns.
+ReferenceIdResolver = Callable[[str | None], str | None]
 
 
 class TTSSink(Protocol):
@@ -96,6 +108,9 @@ class _SessionState:
     chunker: SentenceChunker
     sequence: int = 0
     pending: list[asyncio.Task[None]] = field(default_factory=list)
+    # Cached so ``_dispatch_sentence`` can call the resolver without
+    # threading the AgentHookContext through every helper.
+    session_key: str | None = None
 
 
 _FALLBACK_SESSION_KEY = "__tts_hook_default__"
@@ -114,6 +129,7 @@ class TTSHook(AgentHook):
         synthesizer: TTSSynthesizer,
         sink: TTSSink,
         barrier_timeout_seconds: float = 30.0,
+        reference_id_resolver: ReferenceIdResolver | None = None,
     ) -> None:
         super().__init__()
         self._chunker_factory = chunker_factory
@@ -122,6 +138,7 @@ class TTSHook(AgentHook):
         self._synthesizer = synthesizer
         self._sink = sink
         self._barrier_timeout = barrier_timeout_seconds
+        self._reference_id_resolver = reference_id_resolver
         self._states: dict[str, _SessionState] = {}
         self._fallback_warned = False
 
@@ -197,9 +214,20 @@ class TTSHook(AgentHook):
         key = self._session_key(context)
         state = self._states.get(key)
         if state is None:
-            state = _SessionState(chunker=self._chunker_factory())
+            state = _SessionState(chunker=self._chunker_factory(), session_key=key)
             self._states[key] = state
         return state
+
+    def _resolve_reference_id(self, session_key: str | None) -> str | None:
+        if self._reference_id_resolver is None:
+            return None
+        try:
+            return self._reference_id_resolver(session_key)
+        except Exception:
+            # Resolver failure must not block synthesis — fall back to the
+            # synthesizer's constructor default.
+            logger.exception("TTSHook reference_id resolver raised (session={})", session_key)
+            return None
 
     def _sink_is_enabled(self) -> bool:
         fn = getattr(self._sink, "is_enabled", None)
@@ -213,13 +241,24 @@ class TTSHook(AgentHook):
         # We drop silently — no task, no synthesis, no sequence bump.
         if not self._sink_is_enabled():
             return
+        # Resolve voice up-front so a per-tick state change in the channel
+        # (e.g. user re-sends with a different reference_id mid-stream) does
+        # not split the same sentence across two voices.
+        reference_id = self._resolve_reference_id(state.session_key)
         sequence = state.sequence
         state.sequence += 1
-        task = asyncio.create_task(self._synth_and_emit(text, emotion, sequence))
+        task = asyncio.create_task(
+            self._synth_and_emit(text, emotion, sequence, reference_id=reference_id)
+        )
         state.pending.append(task)
 
     async def _synth_and_emit(
-        self, text: str, emotion: str | None, sequence: int
+        self,
+        text: str,
+        emotion: str | None,
+        sequence: int,
+        *,
+        reference_id: str | None = None,
     ) -> None:
         # Second-chance check: sink's enabled state can change between task
         # scheduled and task running (e.g. channel registers the stream as
@@ -227,7 +266,7 @@ class TTSHook(AgentHook):
         if not self._sink_is_enabled():
             return
         try:
-            audio_b64 = await self._synthesizer.synthesize(text)
+            audio_b64 = await self._synthesizer.synthesize(text, reference_id=reference_id)
         except Exception:
             logger.exception("TTS synth failed (seq={})", sequence)
             audio_b64 = None

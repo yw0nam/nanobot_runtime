@@ -129,3 +129,73 @@ async def test_includes_expected_form_fields(
     assert b"num_steps=40" in body
     assert b"cfg_scale_text=3.0" in body
     assert b"cfg_scale_speaker=5.0" in body
+
+
+async def test_per_call_reference_id_overrides_constructor_default(
+    httpx_mock: HTTPXMock, base_url: str, tmp_path: Path
+) -> None:
+    """A reference_id passed to ``synthesize`` must override the constructor value."""
+    bob_dir = tmp_path / "bob"
+    bob_dir.mkdir()
+    (bob_dir / "merged_audio.mp3").write_bytes(b"bob-ref-audio")
+
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{base_url}/synthesize",
+        content=b"ok",
+        status_code=200,
+    )
+
+    # Constructor sets a *different* reference_id ("alice") that does not
+    # exist on disk — if synthesize used it, it would fail-closed and return
+    # None without making the HTTP call. Per-call override must win.
+    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    result = await client.synthesize("Hi.", reference_id="bob")
+    assert result == base64.b64encode(b"ok").decode("utf-8")
+
+    reqs = httpx_mock.get_requests()
+    assert len(reqs) == 1
+    # Multipart upload signals reference_audio file was attached.
+    assert b"reference_audio" in reqs[0].content
+
+
+async def test_per_call_reference_id_none_falls_back_to_constructor(
+    httpx_mock: HTTPXMock, base_url: str, tmp_path: Path
+) -> None:
+    """``reference_id=None`` (the default) must keep the constructor behaviour."""
+    alice_dir = tmp_path / "alice"
+    alice_dir.mkdir()
+    (alice_dir / "merged_audio.mp3").write_bytes(b"alice-ref-audio")
+
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{base_url}/synthesize",
+        content=b"ok",
+        status_code=200,
+    )
+
+    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    result = await client.synthesize("Hi.")  # no per-call override
+    assert result == base64.b64encode(b"ok").decode("utf-8")
+    assert b"reference_audio" in httpx_mock.get_requests()[0].content
+
+
+async def test_per_call_reference_id_empty_string_disables_baked_in(
+    httpx_mock: HTTPXMock, base_url: str, tmp_path: Path
+) -> None:
+    """Empty-string override must skip reference audio even when constructor set one."""
+    alice_dir = tmp_path / "alice"
+    alice_dir.mkdir()
+    (alice_dir / "merged_audio.mp3").write_bytes(b"alice-ref-audio")
+
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{base_url}/synthesize",
+        content=b"ok",
+        status_code=200,
+    )
+
+    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    result = await client.synthesize("Hi.", reference_id="")
+    assert result == base64.b64encode(b"ok").decode("utf-8")
+    assert b"reference_audio" not in httpx_mock.get_requests()[0].content
