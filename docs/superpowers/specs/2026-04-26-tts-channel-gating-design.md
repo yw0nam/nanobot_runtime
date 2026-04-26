@@ -250,7 +250,7 @@ channels:
 
 ### 6.1 Streaming channel (DesktopMate)
 
-```
+```text
 DesktopMate inbound (session_key="desktop_mate:chat42")
   → AgentLoop → TTSHook.on_stream/on_stream_end
        → _dispatch_sentence
@@ -266,7 +266,7 @@ DesktopMate inbound (session_key="desktop_mate:chat42")
 
 ### 6.2 None channel (Slack thread)
 
-```
+```text
 Slack inbound (session_key="slack:C123:T456")
   → ... → _dispatch_sentence
        → sink.is_enabled("slack:C123:T456")
@@ -279,13 +279,13 @@ Slack inbound (session_key="slack:C123:T456")
 
 ### 6.3 session_key is None (Slack DM, Telegram non-topic)
 
-```
+```text
 mode_map.lookup(None) → default (NONE) → False → skip synthesis
 ```
 
 ### 6.4 Attachment channel (Telegram, today)
 
-```
+```text
 Telegram inbound (session_key="telegram:chat789:topic:42")
   → ... → mode_map.lookup("telegram") → ATTACHMENT
        → mode is not STREAMING → False
