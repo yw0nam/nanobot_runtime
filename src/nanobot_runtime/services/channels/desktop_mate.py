@@ -325,8 +325,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
 def _channel_from_session_key(session_key: str | None) -> str | None:
     """Extract the channel-name prefix from nanobot's '<channel>:<chat_id>[:...]' form.
 
-    nanobot constructs session keys like ``"slack:C123:T456"`` (slack.py:345),
-    ``"telegram:42:topic:7"`` (telegram.py:792), and ``"desktop_mate:<chat_id>"``.
+    nanobot constructs session keys like ``"slack:C123:T456"`` (slack.py
+    ``_handle_message``) and ``"telegram:42:topic:7"`` (telegram.py
+    ``_derive_topic_session_key``), plus ``"desktop_mate:<chat_id>"``.
     The prefix up to the first colon is the channel name; everything after is
     chat- or thread-scoped opaque data.
 
@@ -353,12 +354,14 @@ class LazyChannelTTSSink(TTSSink):
     2. **Channel readiness**: the active DesktopMate stream has TTS on.
 
     If the mode gate rejects, the readiness check is skipped — there's
-    nothing to deliver to anyway. See the design spec §5.3 for why
-    ``streaming`` is operationally bound to DesktopMate in this PR.
+    nothing to deliver to anyway. See ``docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md``
+    §5.3 for why ``streaming`` is operationally bound to DesktopMate.
     """
 
     def __init__(self, mode_map: ChannelModeMap) -> None:
         self._mode_map = mode_map
+        self._race_tolerance_warned = False
+        self._dropped_chunk_warned = False
 
     def is_enabled(self, session_key: str | None) -> bool:
         mode = self._mode_map.lookup(_channel_from_session_key(session_key))
@@ -367,12 +370,31 @@ class LazyChannelTTSSink(TTSSink):
         try:
             return get_desktop_mate_channel().is_tts_enabled_for_current_stream()
         except RuntimeError:
-            return True  # No channel yet — preserves existing race-tolerance.
+            # Channel not constructed yet — let the hook keep working.
+            # send_tts_chunk will silently drop if it's still missing at delivery
+            # time. Warn once per process so a "TTS missing on first message
+            # after restart" doesn't look identical to a config bug.
+            if not self._race_tolerance_warned:
+                logger.warning(
+                    "LazyChannelTTSSink.is_enabled: DesktopMateChannel not "
+                    "registered yet (session_key={}); allowing dispatch on "
+                    "the assumption it will register before delivery.",
+                    session_key,
+                )
+                self._race_tolerance_warned = True
+            return True
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
         try:
             channel = get_desktop_mate_channel()
         except RuntimeError:
+            if not self._dropped_chunk_warned:
+                logger.warning(
+                    "LazyChannelTTSSink.send_tts_chunk: dropping TTSChunk "
+                    "seq={} — DesktopMateChannel still not registered.",
+                    chunk.sequence,
+                )
+                self._dropped_chunk_warned = True
             return
         await channel.send_tts_chunk(chunk)
 

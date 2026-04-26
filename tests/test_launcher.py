@@ -17,7 +17,7 @@ from nanobot_runtime.launcher import _build_idle_config, _resolve_tts_rules_path
 
 
 @pytest.fixture(autouse=True)
-def _clear_yuri_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wipe inherited YURI_* and TTS_* env vars so each test starts from defaults."""
     for k in list(os.environ):
         if k.startswith("YURI_") or k.startswith("TTS_"):
@@ -109,12 +109,12 @@ class TestResolveTtsModesPath:
 
 
 class TestBuildTtsHookFailsWhenModesMissing:
-    def test_raises_file_not_found_with_actionable_message(
+    def test_raises_file_not_found_when_modes_missing_with_actionable_message(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ):
         # Lay down a valid rules file so we get past the first guard.
         rules = tmp_path / "tts_rules.yml"
-        rules.write_text("rules: []\n")  # adjust if EmotionMapper requires more
+        rules.write_text("rules: []\n")
         monkeypatch.setenv("TTS_RULES_PATH", str(rules))
         # Don't create the modes file → expect FileNotFoundError.
         monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing.yml"))
@@ -125,6 +125,27 @@ class TestBuildTtsHookFailsWhenModesMissing:
         msg = str(ei.value)
         assert "TTS_MODES_PATH" in msg
         assert "TTS_ENABLED=0" in msg
+
+    def test_raises_file_not_found_when_rules_missing_with_actionable_message(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        # Don't lay down a rules file → first guard must fail loud, before
+        # the modes guard ever runs (so a refactor that swaps the order or
+        # silently skips the rules check is caught here).
+        monkeypatch.setenv("TTS_RULES_PATH", str(tmp_path / "missing_rules.yml"))
+        # Modes path also points at a missing file; the rules guard must fire
+        # FIRST so this never gets consulted.
+        monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing_modes.yml"))
+
+        from nanobot_runtime.launcher import _build_tts_hook
+        with pytest.raises(FileNotFoundError) as ei:
+            _build_tts_hook()
+        msg = str(ei.value)
+        assert "TTS_RULES_PATH" in msg
+        assert "tts_rules.yml" in msg
+        assert "TTS_ENABLED=0" in msg
+        # Confirm the rules guard fired, not the modes guard.
+        assert "TTS_MODES_PATH" not in msg
 
     def test_does_not_check_modes_when_tts_disabled(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -156,6 +177,4 @@ class TestBuildTtsHookFailsWhenModesMissing:
 
         hooks = _hooks_factory(loop)
 
-        # LTM stubbed → []. TTS off → no append. Idle off → no install.
-        # Result must be exactly the LTM stub's output: empty list.
         assert hooks == []

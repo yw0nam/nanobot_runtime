@@ -25,8 +25,9 @@ interleaved. The hook therefore keeps a **per-session** chunker/sequence/
 pending-tasks state bundle keyed on ``AgentHookContext.session_key``
 (added upstream in the nanobot fork). Turns on non-desktop channels (e.g.
 the idle-watcher firing through ``channel=cli``) still drive ``on_stream``,
-but the sink's ``is_enabled()`` gate returns ``False`` for them, so their
-sentences never consume a sequence number. When ``session_key`` is ``None``
+but the sink's ``is_enabled(session_key)`` gate (consulting the per-channel
+``ChannelModeMap``) returns ``False`` for them, so their sentences never
+consume a sequence number. When ``session_key`` is ``None``
 (caller didn't supply one — stale nanobot, or a test) the hook falls back
 to a shared ``_default`` state bucket and emits a warning once.
 """

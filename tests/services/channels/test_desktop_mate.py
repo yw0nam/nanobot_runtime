@@ -944,8 +944,8 @@ class TestLazyChannelTTSSinkIsEnabled:
         assert sink.is_enabled("slack:C123:T456") is False
 
     def test_attachment_channel_returns_false(self, streaming_only_map: ChannelModeMap):
-        # This sink is streaming-only; ATTACHMENT will be picked up by a future
-        # AttachmentTTSHook with its own sink (out of scope per spec §2).
+        # This sink is streaming-only; ATTACHMENT delivery will require a
+        # separate sink with attachment-aware semantics.
         sink = LazyChannelTTSSink(mode_map=streaming_only_map)
         assert sink.is_enabled("telegram:42:topic:7") is False
 

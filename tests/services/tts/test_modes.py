@@ -6,15 +6,31 @@ the map's lookup semantics (None / unknown channel both fall through to
 the configured default).
 """
 from pathlib import Path
+from typing import Callable
 
 import pytest
 import yaml
+from loguru import logger
 
 from nanobot_runtime.services.tts.modes import (
     ChannelModeMap,
     TTSMode,
     load_channel_modes,
 )
+
+
+def _capture_loguru_warnings(fn: Callable[[], object]) -> list[str]:
+    """Run ``fn`` and return the formatted messages of every WARNING+ loguru
+    record emitted during the call. The project uses loguru, not stdlib
+    logging, so pytest's ``caplog`` fixture doesn't see these records.
+    """
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        fn()
+    finally:
+        logger.remove(sink_id)
+    return messages
 
 
 # ── TTSMode enum ──────────────────────────────────────────────────────
@@ -66,6 +82,16 @@ class TestChannelModeMapLookup:
         assert m.default is TTSMode.NONE
         assert m.channels == {}
         assert m.lookup("anything") is TTSMode.NONE
+
+    def test_map_is_frozen_after_construction(self):
+        # `frozen=True` blocks attribute reassignment so the boot-time
+        # config can't be mutated mid-process by a sink that captures the
+        # map reference. Defends an invariant the docstring promises.
+        m = ChannelModeMap(default=TTSMode.NONE, channels={"slack": TTSMode.NONE})
+        with pytest.raises((TypeError, ValueError)):
+            m.default = TTSMode.STREAMING
+        with pytest.raises((TypeError, ValueError)):
+            m.channels = {"discord": TTSMode.STREAMING}
 
 
 # ── load_channel_modes ────────────────────────────────────────────────
@@ -165,3 +191,33 @@ class TestLoadChannelModes:
         p = tmp_path / "missing.yml"
         with pytest.raises(FileNotFoundError):
             load_channel_modes(p)
+
+    def test_yaml_parse_error_message_includes_file_path(self, tmp_path: Path):
+        # Operator typo in YAML syntax must surface the file path, not just
+        # PyYAML's bare line/column message — every other validation path
+        # in this loader names the file, parse errors should too.
+        p = tmp_path / "modes.yml"
+        p.write_text('default: "unterminated\n')
+        with pytest.raises(yaml.YAMLError) as ei:
+            load_channel_modes(p)
+        assert str(p) in str(ei.value)
+
+    def test_attachment_default_warns(self, tmp_path: Path):
+        p = tmp_path / "modes.yml"
+        p.write_text("default: attachment\n")
+        messages = _capture_loguru_warnings(lambda: load_channel_modes(p))
+        assert any("ATTACHMENT" in m for m in messages)
+
+    def test_attachment_channel_warns(self, tmp_path: Path):
+        # An operator who configures `telegram: attachment` today gets the
+        # silent-NONE behavior. Boot-time warning makes the gap visible.
+        p = tmp_path / "modes.yml"
+        p.write_text("channels:\n  telegram: attachment\n")
+        messages = _capture_loguru_warnings(lambda: load_channel_modes(p))
+        assert any("telegram" in m and "ATTACHMENT" in m for m in messages)
+
+    def test_no_attachment_does_not_warn(self, tmp_path: Path):
+        p = tmp_path / "modes.yml"
+        p.write_text("default: none\nchannels:\n  desktop_mate: streaming\n")
+        messages = _capture_loguru_warnings(lambda: load_channel_modes(p))
+        assert not any("ATTACHMENT" in m for m in messages)

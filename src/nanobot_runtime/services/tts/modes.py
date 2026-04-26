@@ -21,6 +21,7 @@ from enum import Enum
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -81,7 +82,10 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
     substitutes defaults itself — Pydantic field defaults handle absence.
     """
     p = Path(path)
-    raw = yaml.safe_load(p.read_text())
+    try:
+        raw = yaml.safe_load(p.read_text())
+    except yaml.YAMLError as e:
+        raise yaml.YAMLError(f"Failed to parse TTS modes YAML at {p}: {e}") from e
     if raw is None:
         return ChannelModeMap()
     if not isinstance(raw, dict):
@@ -115,4 +119,20 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
                 ) from e
         kwargs["channels"] = channels
 
-    return ChannelModeMap(**kwargs)
+    result = ChannelModeMap(**kwargs)
+    attachment_channels = sorted(
+        name for name, mode in result.channels.items() if mode is TTSMode.ATTACHMENT
+    )
+    if attachment_channels or result.default is TTSMode.ATTACHMENT:
+        logger.warning(
+            "TTSMode.ATTACHMENT is declared in {} for {} but no attachment "
+            "delivery pipeline is implemented yet — those channels will "
+            "receive no audio (silently equivalent to NONE).",
+            p,
+            (
+                f"channels {attachment_channels}"
+                if attachment_channels
+                else "default"
+            ),
+        )
+    return result

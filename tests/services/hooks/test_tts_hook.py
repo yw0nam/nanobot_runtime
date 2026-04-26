@@ -509,6 +509,47 @@ async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump()
     assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
 
 
+async def test_second_chance_check_skips_synth_when_sink_flips_after_dispatch() -> None:
+    """The hook calls `is_enabled` once at dispatch time and once again
+    inside the synth task (second-chance check). If the sink flips from
+    True → False between the two calls, the second-chance check must skip
+    synthesis entirely. Defends the line in `_synth_and_emit` that exists
+    purely for this race.
+    """
+    class _FlipAfterDispatchSink(TTSSink):
+        def __init__(self) -> None:
+            self.chunks: list[TTSChunk] = []
+            self.is_enabled_calls: list[str | None] = []
+
+        def is_enabled(self, session_key: str | None) -> bool:
+            self.is_enabled_calls.append(session_key)
+            # First call (dispatch) returns True; every subsequent call returns False.
+            return len(self.is_enabled_calls) == 1
+
+        async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+            self.chunks.append(chunk)
+
+    sink = _FlipAfterDispatchSink()
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="desktop_mate:chat42")
+
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    # Two is_enabled calls: first-pass (True) + second-chance (False).
+    assert sink.is_enabled_calls == ["desktop_mate:chat42", "desktop_mate:chat42"]
+    # Synthesis must have been skipped despite the task being scheduled.
+    assert synth.calls == []
+    assert sink.chunks == []
+
+
 def test_abc_rejects_sink_missing_required_methods() -> None:
     """`TTSSink` is an ABC: instantiating a subclass that omits either
     abstract method must raise TypeError at construction time. This
