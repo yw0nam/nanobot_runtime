@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from nanobot.agent.hook import AgentHookContext
 
-from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook
+from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook, TTSSink
 
 
 # --------------------------------------------------------------------------
@@ -85,11 +86,34 @@ class _FakeSynthesizer:
         return f"b64::{text}"
 
 
-class _FakeSink:
+class _FakeSink(TTSSink):
     """Captures emitted TTSChunks in order."""
 
     def __init__(self) -> None:
         self.chunks: list[TTSChunk] = []
+
+    def is_enabled(self, session_key: str | None) -> bool:
+        return True
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        self.chunks.append(chunk)
+
+
+class _GatedFakeSink(TTSSink):
+    """Like _FakeSink but exposes a configurable is_enabled gate that
+    records every call's session_key. Used to verify the hook threads
+    AgentHookContext.session_key into both the first-pass dispatch check
+    and the second-chance check inside _synth_and_emit.
+    """
+
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.chunks: list[TTSChunk] = []
+        self.is_enabled_calls: list[str | None] = []
+        self._enabled = enabled
+
+    def is_enabled(self, session_key: str | None) -> bool:
+        self.is_enabled_calls.append(session_key)
+        return self._enabled
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
         self.chunks.append(chunk)
@@ -291,7 +315,7 @@ async def test_sequence_resets_per_hook_instance_across_turns() -> None:
 # --------------------------------------------------------------------------
 
 
-class _FakeSinkWithEnableFlag:
+class _FakeSinkWithEnableFlag(TTSSink):
     """Sink that also advertises an enable state, mimicking the real channel."""
 
     def __init__(self, enabled: bool = True) -> None:
@@ -299,7 +323,7 @@ class _FakeSinkWithEnableFlag:
         self._enabled = enabled
         self.is_enabled_calls = 0
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, session_key: str | None) -> bool:
         self.is_enabled_calls += 1
         return self._enabled
 
@@ -339,20 +363,6 @@ async def test_is_enabled_true_keeps_default_behaviour() -> None:
         synthesizer=synth,
         sink=sink,
     )
-    ctx = _ctx()
-    await hook.on_stream(ctx, "Hello there.")
-    await hook.on_stream_end(ctx, resuming=False)
-
-    assert synth.calls == ["Hello there."]
-    assert len(sink.chunks) == 1
-
-
-async def test_sink_without_is_enabled_defaults_to_enabled() -> None:
-    """Backward compat: sinks that don't expose is_enabled must still work
-    (the original TTSSink protocol had no such method)."""
-    hook, sink, synth = _make_hook()
-    assert not hasattr(sink, "is_enabled")
-
     ctx = _ctx()
     await hook.on_stream(ctx, "Hello there.")
     await hook.on_stream_end(ctx, resuming=False)
@@ -443,3 +453,120 @@ async def test_no_resolver_passes_none_to_synthesize() -> None:
     await hook.on_stream(_ctx(), "Hi.")
     await hook.on_stream_end(_ctx(), resuming=False)
     assert synth.ref_calls == [None]
+
+
+# ── session_key plumbing into sink.is_enabled ─────────────────────────
+
+
+async def test_dispatch_sentence_passes_session_key_to_is_enabled() -> None:
+    """Hook must thread AgentHookContext.session_key into sink.is_enabled
+    so mode-gating sinks (LazyChannelTTSSink) can decide per channel.
+    Both the first-pass check in _dispatch_sentence and the second-chance
+    check inside _synth_and_emit must receive the same key.
+    """
+    sink = _GatedFakeSink(enabled=True)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="slack:C123:T456")
+
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    # First-pass + second-chance: both must use the same session_key.
+    assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
+
+
+async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump() -> None:
+    """When the sink reports disabled at dispatch time, the hook must
+    skip synthesis entirely: no synth call, no emitted chunk, and the
+    per-session sequence counter must not advance (so the next enabled
+    sentence still gets sequence 0).
+    """
+    sink = _GatedFakeSink(enabled=False)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="slack:C123:T456")
+
+    await hook.on_stream(ctx, "Hello there. Second sentence.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    assert synth.calls == []
+    assert sink.chunks == []
+    # Two sentences attempted; one is_enabled call per dispatch attempt.
+    # No second-chance call ever fires because no task was created.
+    assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
+
+
+async def test_second_chance_check_skips_synth_when_sink_flips_after_dispatch() -> None:
+    """The hook calls `is_enabled` once at dispatch time and once again
+    inside the synth task (second-chance check). If the sink flips from
+    True → False between the two calls, the second-chance check must skip
+    synthesis entirely. Defends the line in `_synth_and_emit` that exists
+    purely for this race.
+    """
+    class _FlipAfterDispatchSink(TTSSink):
+        def __init__(self) -> None:
+            self.chunks: list[TTSChunk] = []
+            self.is_enabled_calls: list[str | None] = []
+
+        def is_enabled(self, session_key: str | None) -> bool:
+            self.is_enabled_calls.append(session_key)
+            # First call (dispatch) returns True; every subsequent call returns False.
+            return len(self.is_enabled_calls) == 1
+
+        async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+            self.chunks.append(chunk)
+
+    sink = _FlipAfterDispatchSink()
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="desktop_mate:chat42")
+
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
+
+    # Two is_enabled calls: first-pass (True) + second-chance (False).
+    assert sink.is_enabled_calls == ["desktop_mate:chat42", "desktop_mate:chat42"]
+    # Synthesis must have been skipped despite the task being scheduled.
+    assert synth.calls == []
+    assert sink.chunks == []
+
+
+def test_abc_rejects_sink_missing_required_methods() -> None:
+    """`TTSSink` is an ABC: instantiating a subclass that omits either
+    abstract method must raise TypeError at construction time. This
+    guards against silent removal of `@abstractmethod` decorators in
+    future refactors — without those, a sink could ship without
+    `is_enabled` and the hook would `AttributeError` at the dispatch
+    hot path instead of failing loud at boot.
+    """
+    class _MissingIsEnabled(TTSSink):
+        async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+            pass
+
+    class _MissingSendChunk(TTSSink):
+        def is_enabled(self, session_key: str | None) -> bool:
+            return True
+
+    with pytest.raises(TypeError, match="is_enabled"):
+        _MissingIsEnabled()
+    with pytest.raises(TypeError, match="send_tts_chunk"):
+        _MissingSendChunk()

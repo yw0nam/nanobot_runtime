@@ -9,13 +9,19 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import patch
+
+import pytest
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot_runtime.services.channels.desktop_mate import (
     DesktopMateChannel,
     DesktopMateConfig,
+    LazyChannelTTSSink,
+    _channel_from_session_key,
 )
 from nanobot_runtime.services.hooks.tts import TTSChunk
+from nanobot_runtime.services.tts.modes import ChannelModeMap, TTSMode
 
 
 # ---------------------------------------------------------------------------
@@ -858,3 +864,97 @@ async def test_start_passes_ping_and_max_size_to_serve(monkeypatch):
     assert kwargs.get("ping_interval") == 20.0
     assert kwargs.get("ping_timeout") == 20.0
     assert kwargs.get("max_size") == 60 * 1024 * 1024
+
+
+# ── _channel_from_session_key ─────────────────────────────────────────
+
+
+class Test_ChannelFromSessionKey:
+    """Helper that extracts the channel-name prefix from nanobot's
+    '<channel>:<chat_id>[:...]' session_key convention."""
+
+    def test_extracts_prefix_from_slack_thread_form(self):
+        assert _channel_from_session_key("slack:C123:T456") == "slack"
+
+    def test_extracts_prefix_from_simple_form(self):
+        assert _channel_from_session_key("desktop_mate:abc") == "desktop_mate"
+
+    def test_returns_none_for_none_input(self):
+        assert _channel_from_session_key(None) is None
+
+    def test_returns_none_for_empty_string(self):
+        assert _channel_from_session_key("") is None
+
+    def test_returns_none_for_no_colon_input(self):
+        assert _channel_from_session_key("weird") is None
+
+
+# ── LazyChannelTTSSink.is_enabled mode-gating ─────────────────────────
+
+
+@pytest.fixture
+def streaming_only_map() -> ChannelModeMap:
+    """desktop_mate=streaming, telegram=attachment, default=none."""
+    return ChannelModeMap(
+        default=TTSMode.NONE,
+        channels={
+            "desktop_mate": TTSMode.STREAMING,
+            "telegram": TTSMode.ATTACHMENT,
+        },
+    )
+
+
+class TestLazyChannelTTSSinkIsEnabled:
+    def test_streaming_channel_with_active_desktop_mate_returns_true(
+        self, streaming_only_map: ChannelModeMap
+    ):
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        with patch(
+            "nanobot_runtime.services.channels.desktop_mate.get_desktop_mate_channel"
+        ) as g:
+            g.return_value.is_tts_enabled_for_current_stream.return_value = True
+            assert sink.is_enabled("desktop_mate:chat42") is True
+
+    def test_streaming_channel_without_desktop_mate_returns_true(
+        self, streaming_only_map: ChannelModeMap
+    ):
+        # Race-tolerance: channel not yet constructed at sink-call time. Existing
+        # behaviour preserved so the hook can do useful work; sink will silently
+        # drop in send_tts_chunk if channel is still missing at delivery time.
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        with patch(
+            "nanobot_runtime.services.channels.desktop_mate.get_desktop_mate_channel",
+            side_effect=RuntimeError("channel not constructed"),
+        ):
+            assert sink.is_enabled("desktop_mate:chat42") is True
+
+    def test_streaming_channel_with_tts_off_in_channel_returns_false(
+        self, streaming_only_map: ChannelModeMap
+    ):
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        with patch(
+            "nanobot_runtime.services.channels.desktop_mate.get_desktop_mate_channel"
+        ) as g:
+            g.return_value.is_tts_enabled_for_current_stream.return_value = False
+            assert sink.is_enabled("desktop_mate:chat42") is False
+
+    def test_none_channel_returns_false(self, streaming_only_map: ChannelModeMap):
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        # No need to patch — mode gate short-circuits before readiness check.
+        assert sink.is_enabled("slack:C123:T456") is False
+
+    def test_attachment_channel_returns_false(self, streaming_only_map: ChannelModeMap):
+        # This sink is streaming-only; ATTACHMENT delivery will require a
+        # separate sink with attachment-aware semantics.
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        assert sink.is_enabled("telegram:42:topic:7") is False
+
+    def test_session_key_none_uses_default_mode(self, streaming_only_map: ChannelModeMap):
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        assert sink.is_enabled(None) is False  # default is NONE
+
+    def test_unknown_channel_in_session_key_uses_default_mode(
+        self, streaming_only_map: ChannelModeMap
+    ):
+        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
+        assert sink.is_enabled("discord:guild:chan") is False  # default is NONE

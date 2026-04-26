@@ -17,10 +17,10 @@ from nanobot_runtime.launcher import _build_idle_config, _resolve_tts_rules_path
 
 
 @pytest.fixture(autouse=True)
-def _clear_yuri_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wipe any inherited YURI_* env vars so each test starts from defaults."""
+def _clear_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wipe inherited YURI_* and TTS_* env vars so each test starts from defaults."""
     for k in list(os.environ):
-        if k.startswith("YURI_"):
+        if k.startswith("YURI_") or k.startswith("TTS_"):
             monkeypatch.delenv(k, raising=False)
 
 
@@ -83,5 +83,98 @@ def test_tts_rules_path_defaults_to_cwd_resources(
 
 
 def test_tts_rules_path_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("YURI_TTS_RULES_PATH", "/tmp/custom_rules.yml")
+    monkeypatch.setenv("TTS_RULES_PATH", "/tmp/custom_rules.yml")
     assert _resolve_tts_rules_path() == "/tmp/custom_rules.yml"
+
+
+# ── _resolve_tts_modes_path ────────────────────────────────────────────
+
+
+class TestResolveTtsModesPath:
+    def test_modes_path_defaults_to_cwd_resources_modes_yml(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        monkeypatch.chdir(tmp_path)
+        from nanobot_runtime.launcher import _resolve_tts_modes_path
+        expected = str(tmp_path / "resources" / "tts_channel_modes.yml")
+        assert _resolve_tts_modes_path() == expected
+
+    def test_modes_path_env_override_wins(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TTS_MODES_PATH", "/tmp/custom_modes.yml")
+        from nanobot_runtime.launcher import _resolve_tts_modes_path
+        assert _resolve_tts_modes_path() == "/tmp/custom_modes.yml"
+
+
+# ── _build_tts_hook fail-loud guards ───────────────────────────────────
+
+
+class TestBuildTtsHookFailsWhenModesMissing:
+    def test_raises_file_not_found_when_modes_missing_with_actionable_message(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        # Lay down a valid rules file so we get past the first guard.
+        rules = tmp_path / "tts_rules.yml"
+        rules.write_text("rules: []\n")
+        monkeypatch.setenv("TTS_RULES_PATH", str(rules))
+        # Don't create the modes file → expect FileNotFoundError.
+        monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing.yml"))
+
+        from nanobot_runtime.launcher import _build_tts_hook
+        with pytest.raises(FileNotFoundError) as ei:
+            _build_tts_hook()
+        msg = str(ei.value)
+        assert "TTS_MODES_PATH" in msg
+        assert "TTS_ENABLED=0" in msg
+
+    def test_raises_file_not_found_when_rules_missing_with_actionable_message(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        # Don't lay down a rules file → first guard must fail loud, before
+        # the modes guard ever runs (so a refactor that swaps the order or
+        # silently skips the rules check is caught here).
+        monkeypatch.setenv("TTS_RULES_PATH", str(tmp_path / "missing_rules.yml"))
+        # Modes path also points at a missing file; the rules guard must fire
+        # FIRST so this never gets consulted.
+        monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing_modes.yml"))
+
+        from nanobot_runtime.launcher import _build_tts_hook
+        with pytest.raises(FileNotFoundError) as ei:
+            _build_tts_hook()
+        msg = str(ei.value)
+        assert "TTS_RULES_PATH" in msg
+        assert "tts_rules.yml" in msg
+        assert "TTS_ENABLED=0" in msg
+        # Confirm the rules guard fired, not the modes guard.
+        assert "TTS_MODES_PATH" not in msg
+
+    def test_does_not_check_modes_when_tts_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        # When TTS_ENABLED=0, _hooks_factory must skip _build_tts_hook
+        # entirely — no rules check, no modes check.
+        #
+        # We isolate the TTS branch by stubbing the only other branches
+        # _hooks_factory exercises (LTM hook construction and the idle
+        # cron install) so a failure in this test can ONLY mean the TTS
+        # branch was incorrectly entered. No bare-except — every failure
+        # mode is named.
+        monkeypatch.setattr(
+            "nanobot_runtime.launcher.build_ltm_hooks",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "nanobot_runtime.launcher.install_idle_system_job",
+            lambda **k: None,  # never actually installed (we set IDLE off)
+        )
+        monkeypatch.setenv("TTS_ENABLED", "0")
+        monkeypatch.setenv("YURI_IDLE_ENABLED", "0")
+        monkeypatch.chdir(tmp_path)  # no resources/ dir at all
+
+        from unittest.mock import MagicMock
+        from nanobot_runtime.launcher import _hooks_factory
+        loop = MagicMock()
+        loop.cron_service = None  # not consulted because IDLE is off
+
+        hooks = _hooks_factory(loop)
+
+        assert hooks == []

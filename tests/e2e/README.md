@@ -17,7 +17,7 @@ streaming timing, Irodori synthesis latency, and LTM MCP roundtrips.
 2. Three backends reachable:
    - vLLM (per `nanobot.json` `providers.vllm.apiBase`)
    - Irodori TTS (defaults to `http://192.168.0.41:8091`; override with
-     `YURI_TTS_URL`)
+     `TTS_URL`)
    - LTM MCP (per `nanobot.json` `tools.mcpServers.ltm.url`)
 3. Free port `8765` (the WS channel default). Override with `YURI_E2E_WS_PORT`.
 

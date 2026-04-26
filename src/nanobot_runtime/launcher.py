@@ -1,10 +1,12 @@
 """Workspace launcher: install LTM + TTS + idle hooks and start the gateway.
 
 This module is the entry point that workspace ``.env`` configurations
-target. All identity/runtime tunables (user_id, agent_id, LTM URL, TTS
-backend URL, idle thresholds) come from ``YURI_*`` environment variables
-so the same launcher binary can serve multiple workspaces; the workspace
-itself only carries ``nanobot.json`` + ``.env`` + ``resources/``.
+target. Identity/runtime tunables (user_id, agent_id, LTM URL, idle
+thresholds) come from ``YURI_*`` environment variables; TTS tunables
+(backend URL, rules/modes paths) come from ``TTS_*`` since the TTS stack
+is workspace-neutral. The same launcher binary can serve multiple
+workspaces; the workspace itself only carries ``nanobot.json`` + ``.env``
++ ``resources/``.
 
 Default paths resolve against the workspace working directory (cwd), not
 against this file's location, so the launcher stays portable when
@@ -24,6 +26,7 @@ from nanobot_runtime.services.hooks.tts import TTSHook
 from nanobot_runtime.services.proactive.installer import install_idle_system_job
 from nanobot_runtime.services.tts.chunker import SentenceChunker
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
+from nanobot_runtime.services.tts.modes import load_channel_modes
 from nanobot_runtime.services.tts.preprocessor import Preprocessor
 
 
@@ -36,8 +39,21 @@ def _resolve_tts_rules_path() -> str:
     `chdir` after import still get the right path.
     """
     return os.getenv(
-        "YURI_TTS_RULES_PATH",
+        "TTS_RULES_PATH",
         os.path.join(os.getcwd(), "resources", "tts_rules.yml"),
+    )
+
+
+def _resolve_tts_modes_path() -> str:
+    """Resolve the TTS channel-mode YAML path at call time, not import time.
+
+    Defaults to ``<cwd>/resources/tts_channel_modes.yml``. Same lazy-resolve
+    pattern as ``_resolve_tts_rules_path`` so test harnesses that ``chdir``
+    after import still get the right path.
+    """
+    return os.getenv(
+        "TTS_MODES_PATH",
+        os.path.join(os.getcwd(), "resources", "tts_channel_modes.yml"),
     )
 
 
@@ -46,34 +62,42 @@ def _build_tts_hook() -> TTSHook:
 
     The sink uses :class:`LazyChannelTTSSink` so the hook is independent of
     channel start-up order — the channel is resolved per-chunk at send
-    time. If TTS is fully disabled for a workspace, set ``YURI_TTS_ENABLED=0``
+    time. If TTS is fully disabled for a workspace, set ``TTS_ENABLED=0``
     and the factory returns no TTS hook.
 
-    A missing TTS rules YAML is treated as a misconfiguration, not a
-    degraded mode — :class:`EmotionMapper.from_yaml` would otherwise
-    silently fall back to an empty map. We pre-check existence so the
-    operator gets a loud, actionable failure at startup.
+    A missing TTS rules YAML or modes YAML is treated as a misconfiguration,
+    not a degraded mode — the operator gets a loud, actionable failure at
+    startup.
     """
     rules_path = _resolve_tts_rules_path()
     if not os.path.exists(rules_path):
         raise FileNotFoundError(
             f"TTS rules YAML not found at {rules_path!r}. Set "
-            "YURI_TTS_RULES_PATH or place the file at "
+            "TTS_RULES_PATH or place the file at "
             "<workspace>/resources/tts_rules.yml. To run without TTS set "
-            "YURI_TTS_ENABLED=0."
+            "TTS_ENABLED=0."
         )
+    modes_path = _resolve_tts_modes_path()
+    if not os.path.exists(modes_path):
+        raise FileNotFoundError(
+            f"TTS channel modes YAML not found at {modes_path!r}. Set "
+            "TTS_MODES_PATH or place the file at "
+            "<workspace>/resources/tts_channel_modes.yml. To run without TTS set "
+            "TTS_ENABLED=0."
+        )
+    mode_map = load_channel_modes(modes_path)
     emotion_mapper = EmotionMapper.from_yaml(rules_path)
     synthesizer = IrodoriClient(
-        base_url=os.getenv("YURI_TTS_URL", "http://192.168.0.41:8091"),
-        reference_id=os.getenv("YURI_TTS_REF_AUDIO"),
+        base_url=os.getenv("TTS_URL", "http://192.168.0.41:8091"),
+        reference_id=os.getenv("TTS_REF_AUDIO"),
     )
     return TTSHook(
         chunker_factory=SentenceChunker,
         preprocessor=Preprocessor(known_emojis=emotion_mapper.known_emojis),
         emotion_mapper=emotion_mapper,
         synthesizer=synthesizer,
-        sink=LazyChannelTTSSink(),
-        barrier_timeout_seconds=float(os.getenv("YURI_TTS_BARRIER_TIMEOUT", "30")),
+        sink=LazyChannelTTSSink(mode_map=mode_map),
+        barrier_timeout_seconds=float(os.getenv("TTS_BARRIER_TIMEOUT", "30")),
     )
 
 
@@ -119,7 +143,7 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
             top_k=int(os.getenv("YURI_LTM_TOP_K", "5")),
         )
     )
-    if os.getenv("YURI_TTS_ENABLED", "1") != "0":
+    if os.getenv("TTS_ENABLED", "1") != "0":
         hooks.append(_build_tts_hook())
 
     idle_config = _build_idle_config()
