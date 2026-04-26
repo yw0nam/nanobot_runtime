@@ -42,7 +42,7 @@ wired in this PR.
 |---|------------|--------------|
 | A1 | nanobot `session_key` follows `<channel_name>:<...>` form | `nanobot/channels/slack.py:345` (`f"slack:{chat_id}:{thread_ts}"`); `nanobot/channels/telegram.py:792` (`f"telegram:{message.chat_id}:topic:{message_thread_id}"`); `LazyChannelTTSSink.get_reference_id_for_session` docstring confirms `"<channel>:<chat_id>"` is nanobot's convention |
 | A2 | `session_key` may be `None` for some inbound paths | `slack.py:345` returns `None` for DMs and non-thread channel messages; `telegram.py:792` returns `None` when `message_thread_id is None`. We must treat `None` as "channel unknown → use `default` mode". |
-| A3 | `TTSHook._sink_is_enabled()` is the only call site of `sink.is_enabled()` | grep across `nanobot_runtime` shows `is_enabled` is a sink-Protocol method only consumed by the hook |
+| A3 | `TTSHook` is the only call site of `sink.is_enabled()` | grep across `nanobot_runtime` shows `is_enabled` is a `TTSSink` ABC method only consumed by the hook (`_dispatch_sentence` and `_synth_and_emit`) |
 | A4 | Pydantic + `yaml.safe_load` is the project standard for structured config | `.claude/rules/CODING_RULES.md` §6: *"Runtime config loaded from YAML files via `yaml.safe_load()`"*; existing `EmotionMapper.from_yaml()` follows this pattern |
 | A5 | `AgentHookContext.session_key` is set per turn by nanobot's loop | `services/hooks/tts.py` lines 19-31 documents this contract; `_SessionState.session_key` already caches it for use in `get_reference_id_for_session` |
 
@@ -53,12 +53,11 @@ launcher.py
    ├─ _resolve_tts_modes_path() → cwd/resources/tts_channel_modes.yml (or TTS_MODES_PATH override)
    └─ load_channel_modes(path) → ChannelModeMap (frozen Pydantic)
         └─ injected into LazyChannelTTSSink(mode_map=...)
-             └─ TTSHook(sink=...)              # hook-side change is one line
-                  └─ _sink_is_enabled(state.session_key)
-                       └─ sink.is_enabled(session_key)
-                            ├─ extract channel from session_key prefix
-                            ├─ mode_map.lookup(channel) → TTSMode
-                            └─ True iff mode == STREAMING and channel ready
+             └─ TTSHook(sink=...)              # hook calls sink.is_enabled directly
+                  └─ sink.is_enabled(state.session_key)
+                       ├─ extract channel from session_key prefix
+                       ├─ mode_map.lookup(channel) → TTSMode
+                       └─ True iff mode == STREAMING and channel ready
 ```
 
 Boundary of change is `nanobot_runtime`. Nothing in nanobot is touched.
@@ -101,23 +100,39 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
 
 ### 5.2 `services/hooks/tts.py` (modified — minimal)
 
-Two signature changes, three call-site updates. Hook constructor unchanged.
+`TTSSink` is promoted from a `Protocol` with an optional `is_enabled`
+method to an `abc.ABC` whose `send_tts_chunk` and `is_enabled` are both
+`@abstractmethod`. This unifies the contract: every sink (production,
+regression harness, test fakes) must implement both, so the hook can
+call `self._sink.is_enabled(...)` directly without runtime
+introspection. The previous `_sink_is_enabled()` helper —
+`getattr(self._sink, "is_enabled", None) ...` plus the implicit
+"sinks without `is_enabled` are always enabled" fallback — is
+deleted along with its dedicated test. Two signature changes, three
+call-site updates. Hook constructor unchanged.
 
 ```python
-class TTSSink(Protocol):
+from abc import ABC, abstractmethod
+
+
+class TTSSink(ABC):
+    @abstractmethod
     async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
-    # Optional. Now takes session_key so sinks can gate per channel.
-    # def is_enabled(self, session_key: str | None = None) -> bool: ...
 
-
-def _sink_is_enabled(self, session_key: str | None = None) -> bool:
-    fn = getattr(self._sink, "is_enabled", None)
-    return not callable(fn) or fn(session_key)
+    @abstractmethod
+    def is_enabled(self, session_key: str | None) -> bool:
+        """Return True iff this sink is willing to deliver audio for the
+        given session. The hook calls this once at dispatch time and
+        once again inside the synth task (second-chance check) — both
+        with the same ``state.session_key``. Sinks that don't care about
+        the channel (e.g. test fakes, regression DirectSink) implement
+        this trivially.
+        """
 
 
 def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
     ...
-    if not self._sink_is_enabled(state.session_key):   # was: ()
+    if not self._sink.is_enabled(state.session_key):
         return
     ...
     task = asyncio.create_task(
@@ -130,7 +145,7 @@ def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
 async def _synth_and_emit(self, text, emotion, sequence, *,
                           session_key: str | None,            # new kw
                           reference_id: str | None = None) -> None:
-    if not self._sink_is_enabled(session_key):                # was: ()
+    if not self._sink.is_enabled(session_key):
         return
     ...
 ```
@@ -149,11 +164,11 @@ def _channel_from_session_key(session_key: str | None) -> str | None:
     return prefix if sep else None
 
 
-class LazyChannelTTSSink:
+class LazyChannelTTSSink(TTSSink):                          # inherits ABC
     def __init__(self, mode_map: ChannelModeMap) -> None:    # required arg
         self._mode_map = mode_map
 
-    def is_enabled(self, session_key: str | None = None) -> bool:
+    def is_enabled(self, session_key: str | None) -> bool:
         mode = self._mode_map.lookup(_channel_from_session_key(session_key))
         if mode is not TTSMode.STREAMING:
             return False
@@ -162,8 +177,8 @@ class LazyChannelTTSSink:
         except RuntimeError:
             return True   # channel not constructed yet — preserves existing race-tolerance
 
-    # send_tts_chunk: unchanged
-    # get_reference_id_for_session: unchanged
+    # send_tts_chunk: unchanged (already implements the abstract method)
+    # get_reference_id_for_session: unchanged (sink-specific helper, not part of TTSSink)
 ```
 
 #### Operational note: scope of `streaming` mode in this PR
@@ -260,7 +275,7 @@ DesktopMate inbound (session_key="desktop_mate:chat42")
                  → get_desktop_mate_channel().is_tts_enabled_for_current_stream() → True
                  → True
             → asyncio.create_task(_synth_and_emit(..., session_key=...))
-                 → sink.is_enabled() second-chance check → True
+                 → sink.is_enabled("desktop_mate:chat42") second-chance check → True
                  → synthesize → sink.send_tts_chunk → DesktopMate
 ```
 
@@ -322,8 +337,8 @@ gate independently and never both fire on the same sentence.
 | `session_key` has no colon (`"weird"`) | `partition(":")` gives empty `sep` → returns None → `default`. |
 | Channel name not in map | `default` mode applies. |
 | STREAMING channel + DesktopMate not yet constructed | `RuntimeError` caught; `is_enabled` returns True (preserves existing race-tolerance — sink will silently drop in `send_tts_chunk` if channel still missing). |
-| Sink without `is_enabled` method (test mocks) | `_sink_is_enabled` returns True (backward compat preserved). |
-| Sink with old `is_enabled()` signature (no kwarg) | `TypeError: takes 1 positional argument but 2 were given` — loud failure. Test mocks must be updated as part of this PR. |
+| Sink class missing `is_enabled` or `send_tts_chunk` | `TypeError: Can't instantiate abstract class …` at construction time — fails loud at boot or test setup, never at the dispatch hot path. |
+| Sink with old `is_enabled()` signature (no `session_key` arg) | `TypeError: takes 1 positional argument but 2 were given` — loud failure. Test mocks and the regression `DirectSink` must be updated as part of this PR. |
 
 ### Logging
 
@@ -385,7 +400,7 @@ These references break silently after the rename if not updated together:
 | `tests/e2e/README.md` | 20 | `YURI_TTS_URL` reference → `TTS_URL` |
 | `docs/setup.md` | 34, 35, 175, 176 | All `YURI_TTS_ENABLED` / `YURI_TTS_URL` → `TTS_ENABLED` / `TTS_URL` |
 | `tests/test_launcher.py` | 86 | `monkeypatch.setenv("YURI_TTS_RULES_PATH", ...)` → `"TTS_RULES_PATH"` |
-| `tests/regression/harness.py` | ~100 | `DirectSink.is_enabled(self) -> bool` → `is_enabled(self, session_key: str \| None = None) -> bool`. Body unchanged — the channel's readiness check doesn't need the key, but the new TTSHook signature passes it positionally and would raise TypeError otherwise. |
+| `tests/regression/harness.py` | ~88, ~100 | `class DirectSink:` → `class DirectSink(TTSSink):` (inherit ABC). `is_enabled(self) -> bool` → `is_enabled(self, session_key: str \| None) -> bool` (positional, no default — matches the ABC contract). Body unchanged. Without both edits, `DirectSink()` raises `TypeError: Can't instantiate abstract class …` at scenario setup. |
 
 `docs/operations.md`, `tests/e2e/README.md` (other lines), and the
 top-level `README.md` reference only `YURI_IDLE_*` / `YURI_WORKSPACE`,
@@ -441,7 +456,7 @@ TestTTSHookSessionKeyPlumbing
   test_dispatch_sentence_passes_session_key_to_is_enabled
   test_synth_and_emit_passes_session_key_in_second_chance_check
   test_disabled_sink_skips_dispatch_no_task_no_sequence_bump
-  test_sink_without_is_enabled_method_treated_as_always_enabled
+  test_abc_rejects_sink_missing_required_methods   # construction-time TypeError
 ```
 
 ### `tests/test_launcher.py` (modified — env-var rename + new helper tests)

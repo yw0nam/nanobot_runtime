@@ -18,13 +18,13 @@
 |---|---|---|
 | `src/nanobot_runtime/services/tts/modes.py` | CREATE | `TTSMode` enum, frozen `ChannelModeMap`, `load_channel_modes(path)` YAML loader. Pure data + I/O, no runtime dependencies. |
 | `tests/services/tts/test_modes.py` | CREATE | Loader + lookup unit tests. |
-| `src/nanobot_runtime/services/channels/desktop_mate.py` | MODIFY | Add `_channel_from_session_key` helper. Inject `mode_map` into `LazyChannelTTSSink.__init__`. Rewrite `is_enabled(session_key)` to gate on mode before falling through to existing channel-readiness check. |
+| `src/nanobot_runtime/services/channels/desktop_mate.py` | MODIFY | Add `_channel_from_session_key` helper. Make `LazyChannelTTSSink` inherit `TTSSink` (ABC). Inject `mode_map` into `__init__`. Rewrite `is_enabled(session_key)` to gate on mode before falling through to existing channel-readiness check. |
 | `tests/services/channels/test_desktop_mate.py` | MODIFY | Add `Test_ChannelFromSessionKey` and `TestLazyChannelTTSSinkIsEnabled` classes (existing send-frame tests untouched). |
-| `src/nanobot_runtime/services/hooks/tts.py` | MODIFY | `TTSSink` Protocol comment-spec gains optional `session_key` arg. `_sink_is_enabled` accepts and forwards it. `_dispatch_sentence` passes `state.session_key`. `_synth_and_emit` gains `session_key` kwarg for second-chance check. |
-| `tests/services/hooks/test_tts_hook.py` | MODIFY | Add `TestTTSHookSessionKeyPlumbing`. |
+| `src/nanobot_runtime/services/hooks/tts.py` | MODIFY | Promote `TTSSink` from `Protocol` to `abc.ABC` with `send_tts_chunk` and `is_enabled(session_key)` as `@abstractmethod`. Delete the `_sink_is_enabled` helper. `_dispatch_sentence` and `_synth_and_emit` call `self._sink.is_enabled(...)` directly. |
+| `tests/services/hooks/test_tts_hook.py` | MODIFY | Update existing `_FakeSink` / `_FakeSinkWithEnableFlag` to inherit `TTSSink` and accept `session_key`. Add `_GatedFakeSink` and three new `async def test_*` functions (session_key plumbing, disabled-skip, ABC abstractmethod enforcement). |
 | `src/nanobot_runtime/launcher.py` | MODIFY | Add `_resolve_tts_modes_path()`. In `_build_tts_hook()`: read modes YAML (FileNotFoundError if missing), inject `mode_map` into `LazyChannelTTSSink`. Rename TTS env vars (`YURI_TTS_*` → `TTS_*`). |
 | `tests/test_launcher.py` | MODIFY | Rename `YURI_TTS_RULES_PATH` → `TTS_RULES_PATH` in existing test. Extend `_clear_yuri_env` autouse fixture to also strip `TTS_*`. Add `TestResolveTtsModesPath` and `TestBuildTtsHookFailsWhenModesMissing`. |
-| `tests/regression/harness.py` | MODIFY | Update `DirectSink.is_enabled` signature to accept `session_key: str \| None = None` (body unchanged — channel readiness doesn't need it, but the new TTSHook call site passes the key positionally). |
+| `tests/regression/harness.py` | MODIFY | `DirectSink` inherits `TTSSink` (ABC). Update `is_enabled` signature to accept `session_key: str \| None` positionally (body unchanged — channel readiness doesn't need the key, but the ABC contract requires the parameter). |
 | `tests/e2e/conftest.py` | MODIFY | Line ~139: `YURI_TTS_URL` → `TTS_URL`. |
 | `tests/e2e/README.md` | MODIFY | Line ~20: doc reference `YURI_TTS_URL` → `TTS_URL`. |
 | `docs/setup.md` | MODIFY | Lines 34, 35, 175, 176: `YURI_TTS_ENABLED` / `YURI_TTS_URL` → `TTS_ENABLED` / `TTS_URL`. |
@@ -608,13 +608,12 @@ class TestLazyChannelTTSSinkIsEnabled:
     ):
         sink = LazyChannelTTSSink(mode_map=streaming_only_map)
         assert sink.is_enabled("discord:guild:chan") is False  # default is NONE
-
-    def test_no_arg_call_falls_through_to_default(self, streaming_only_map: ChannelModeMap):
-        # Backward-compat: callers passing no session_key (e.g. legacy mocks)
-        # get the same treatment as session_key=None.
-        sink = LazyChannelTTSSink(mode_map=streaming_only_map)
-        assert sink.is_enabled() is False  # default is NONE
 ```
+
+Note: there is intentionally no "no-arg" or "default-arg" test for
+`is_enabled` — `TTSSink.is_enabled` is an `@abstractmethod` whose
+contract requires `session_key` as a positional argument. Callers that
+have no key pass `None` explicitly. There is no implicit fallback.
 
 ### Step 3.2: Run to verify failure
 
@@ -626,13 +625,14 @@ class TestLazyChannelTTSSinkIsEnabled:
 - [ ] In `src/nanobot_runtime/services/channels/desktop_mate.py`, add this import near the top alongside other `nanobot_runtime` imports:
 
 ```python
+from nanobot_runtime.services.hooks.tts import TTSSink
 from nanobot_runtime.services.tts.modes import ChannelModeMap, TTSMode
 ```
 
-- [ ] Replace the entire `LazyChannelTTSSink` class. The class currently has these methods (per `tts.py:332`-ish onward in the original file): `is_enabled(self) -> bool`, `send_tts_chunk(self, chunk)`, and `get_reference_id_for_session(self, session_key)`. Keep `send_tts_chunk` and `get_reference_id_for_session` byte-for-byte identical (only the lookup-helper bit at the bottom of `get_reference_id_for_session` was already using `partition(":")` — leave it alone). Replace just `__init__` and `is_enabled`:
+- [ ] Replace the entire `LazyChannelTTSSink` class. The class currently has these methods (per `tts.py:332`-ish onward in the original file): `is_enabled(self) -> bool`, `send_tts_chunk(self, chunk)`, and `get_reference_id_for_session(self, session_key)`. Keep `send_tts_chunk` and `get_reference_id_for_session` byte-for-byte identical (only the lookup-helper bit at the bottom of `get_reference_id_for_session` was already using `partition(":")` — leave it alone). The class now inherits from `TTSSink` (ABC) so the type system enforces that both abstract methods are implemented. Replace just the class header, `__init__`, and `is_enabled`:
 
 ```python
-class LazyChannelTTSSink:
+class LazyChannelTTSSink(TTSSink):
     """Lazily resolve ``DesktopMateChannel`` + gate per channel TTS mode.
 
     Avoids ordering constraints between hook factory and channel
@@ -652,7 +652,7 @@ class LazyChannelTTSSink:
     def __init__(self, mode_map: ChannelModeMap) -> None:
         self._mode_map = mode_map
 
-    def is_enabled(self, session_key: str | None = None) -> bool:
+    def is_enabled(self, session_key: str | None) -> bool:
         mode = self._mode_map.lookup(_channel_from_session_key(session_key))
         if mode is not TTSMode.STREAMING:
             return False
@@ -661,11 +661,13 @@ class LazyChannelTTSSink:
         except RuntimeError:
             return True  # No channel yet — preserves existing race-tolerance.
 
-    # send_tts_chunk: unchanged from prior implementation.
-    # get_reference_id_for_session: unchanged from prior implementation.
+    # send_tts_chunk: unchanged from prior implementation (already satisfies
+    # the TTSSink.send_tts_chunk abstract method).
+    # get_reference_id_for_session: unchanged — sink-specific helper, not
+    # part of the TTSSink contract.
 ```
 
-> Important: do NOT delete `send_tts_chunk` or `get_reference_id_for_session`. Only replace `__init__` and `is_enabled`. Verify after editing that the file still has both methods.
+> Important: do NOT delete `send_tts_chunk` or `get_reference_id_for_session`. Only replace the class header, `__init__`, and `is_enabled`. Verify after editing that the file still has both methods — `send_tts_chunk` is required by the ABC, and removing it would make `LazyChannelTTSSink` non-instantiable.
 
 ### Step 3.4: Run to verify pass
 
@@ -714,14 +716,20 @@ Three call-site updates in `tts.py` plus a small signature update to the regress
 - Modify: `tests/services/hooks/test_tts_hook.py` (add `_GatedFakeSink` + new test functions; existing fakes/`_make_hook`/`_ctx` style preserved)
 - Modify: `tests/regression/harness.py` (`DirectSink.is_enabled` signature)
 
-### Step 4.1: Add `_GatedFakeSink` helper + failing tests
+### Step 4.1: Add `_GatedFakeSink` + failing tests
 
-The existing file uses module-level fake classes (`_FakeChunker`, `_FakePreprocessor`, `_FakeSink`, `_FakeSynthesizer`), a `_make_hook(...)` factory returning `(hook, sink, synth)`, a `_ctx(iteration=0, session_key="test-session")` helper, and plain `async def test_*` functions (no test classes). Match that style.
+The existing file uses module-level fake classes (`_FakeChunker`, `_FakePreprocessor`, `_FakeSink`, `_FakeSinkWithEnableFlag`, `_FakeSynthesizer`), a `_make_hook(...)` factory, a `_ctx(iteration=0, session_key="test-session")` helper, and plain `async def test_*` functions. Match that style.
 
-- [ ] Open `tests/services/hooks/test_tts_hook.py`. Add a new fake class right after the existing `_FakeSink` definition:
+- [ ] Open `tests/services/hooks/test_tts_hook.py`. Add the `TTSSink` import alongside the existing imports from `nanobot_runtime.services.hooks.tts`:
 
 ```python
-class _GatedFakeSink:
+from nanobot_runtime.services.hooks.tts import TTSHook, TTSSink
+```
+
+- [ ] Add a new fake class right after the existing `_FakeSink` definition:
+
+```python
+class _GatedFakeSink(TTSSink):
     """Like _FakeSink but exposes a configurable is_enabled gate that
     records every call's session_key. Used to verify the hook threads
     AgentHookContext.session_key into both the first-pass dispatch check
@@ -733,7 +741,7 @@ class _GatedFakeSink:
         self.is_enabled_calls: list[str | None] = []
         self._enabled = enabled
 
-    def is_enabled(self, session_key: str | None = None) -> bool:
+    def is_enabled(self, session_key: str | None) -> bool:
         self.is_enabled_calls.append(session_key)
         return self._enabled
 
@@ -741,7 +749,7 @@ class _GatedFakeSink:
         self.chunks.append(chunk)
 ```
 
-- [ ] At the bottom of the file (after the existing tests), add three new test functions matching the existing `async def test_*` style:
+- [ ] At the bottom of the file (after the existing tests), add the new test functions matching the existing `async def test_*` style:
 
 ```python
 # ── session_key plumbing into sink.is_enabled ─────────────────────────
@@ -798,70 +806,128 @@ async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump()
     assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
 
 
-async def test_sink_without_is_enabled_method_is_treated_as_always_enabled() -> None:
-    """Backward compat: bare sinks (existing _FakeSink with no is_enabled
-    method) must still receive chunks. Many existing tests in this file
-    rely on this; the new gating must not break them.
+def test_abc_rejects_sink_missing_required_methods() -> None:
+    """`TTSSink` is an ABC: instantiating a subclass that omits either
+    abstract method must raise TypeError at construction time. This
+    guards against silent removal of `@abstractmethod` decorators in
+    future refactors — without those, a sink could ship without
+    `is_enabled` and the hook would `AttributeError` at the dispatch
+    hot path instead of failing loud at boot.
     """
-    sink = _FakeSink()  # existing fake — has no is_enabled method
-    synth = _FakeSynthesizer()
-    hook = TTSHook(
-        chunker_factory=_FakeChunker,
-        preprocessor=_FakePreprocessor(),
-        emotion_mapper=_FakeEmotionMapper(),
-        synthesizer=synth,
-        sink=sink,
-    )
-    ctx = _ctx()
+    class _MissingIsEnabled(TTSSink):
+        async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+            pass
 
-    await hook.on_stream(ctx, "Hello there.")
-    await hook.on_stream_end(ctx, resuming=False)
+    class _MissingSendChunk(TTSSink):
+        def is_enabled(self, session_key: str | None) -> bool:
+            return True
 
-    assert synth.calls == ["Hello there."]
-    assert len(sink.chunks) == 1
+    with pytest.raises(TypeError, match="is_enabled"):
+        _MissingIsEnabled()
+    with pytest.raises(TypeError, match="send_tts_chunk"):
+        _MissingSendChunk()
 ```
+
+> No backward-compat test for sinks-without-is_enabled. With ABC such a sink can't be instantiated; the failure is at construction time, not at dispatch. The dropped `test_sink_without_is_enabled_method_is_treated_as_always_enabled` is replaced by `test_abc_rejects_sink_missing_required_methods` above.
 
 ### Step 4.2: Run to verify failure
 
-- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py::test_dispatch_sentence_passes_session_key_to_is_enabled -v`
-- [ ] Expected: AssertionError. Current code calls `fn()` (no args) inside `_sink_is_enabled`, so `is_enabled_calls` would be `[None, None]`, not the session key.
+- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py -k "session_key or disabled_sink or abc_rejects" -v`
+- [ ] Expected: failures.
+  - `test_dispatch_sentence_passes_session_key_to_is_enabled`: AssertionError — current `_sink_is_enabled` calls `fn()` (no args), so `is_enabled_calls` would record `[None, None]` (Python's `fn(None)` passing through the helper) instead of the session key. Or, if `_GatedFakeSink.is_enabled` requires positional `session_key`, you'll get a TypeError; both count as "red".
+  - `test_abc_rejects_sink_missing_required_methods`: ImportError or TypeError from `from nanobot_runtime.services.hooks.tts import TTSSink` — the class exists but is still a `Protocol`, so `_MissingIsEnabled()` succeeds without raising. The `pytest.raises(TypeError)` then fails with "DID NOT RAISE".
+- [ ] (Pre-existing tests using `_FakeSink`/`_FakeSinkWithEnableFlag` still pass at this point — the impl still uses the old `_sink_is_enabled` getattr path.)
 
-### Step 4.3: Implement the threading
+### Step 4.3: Implement — promote `TTSSink` to ABC, drop `_sink_is_enabled`, update fakes
 
-- [ ] In `src/nanobot_runtime/services/hooks/tts.py`, update the `TTSSink` Protocol comment-spec (line ~99–100):
+This step is **atomic**: promoting `TTSSink` to ABC makes the existing `_FakeSink` (no `is_enabled`) and `_FakeSinkWithEnableFlag` (`is_enabled()` with no `session_key` param) non-instantiable, so the fake updates and the hook updates must land in the same commit. Order the edits as written below — fake updates first, then `tts.py` — so a partially-applied edit doesn't break test collection.
+
+#### 4.3a — Update existing fakes for ABC compliance
+
+- [ ] In `tests/services/hooks/test_tts_hook.py`, update the existing `_FakeSink` (at line ~88) to inherit `TTSSink` and gain a trivial `is_enabled`. Existing tests that use this fake don't care about gating, so always-True preserves their behavior:
 
 ```python
-class TTSSink(Protocol):
+class _FakeSink(TTSSink):
+    """Captures emitted TTSChunks in order."""
+
+    def __init__(self) -> None:
+        self.chunks: list[TTSChunk] = []
+
+    def is_enabled(self, session_key: str | None) -> bool:
+        return True
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        self.chunks.append(chunk)
+```
+
+- [ ] Update the existing `_FakeSinkWithEnableFlag` (at line ~294) to inherit `TTSSink` and accept `session_key`. The body remains pure-stateful (records call count, returns the configured flag); `session_key` is unused by this fake — only `_GatedFakeSink` records it:
+
+```python
+class _FakeSinkWithEnableFlag(TTSSink):
+    """Sink that also advertises an enable state, mimicking the real channel."""
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.chunks: list[TTSChunk] = []
+        self._enabled = enabled
+        self.is_enabled_calls = 0
+
+    def is_enabled(self, session_key: str | None) -> bool:
+        self.is_enabled_calls += 1
+        return self._enabled
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        self.chunks.append(chunk)
+```
+
+#### 4.3b — Promote `TTSSink` to ABC and drop `_sink_is_enabled`
+
+- [ ] In `src/nanobot_runtime/services/hooks/tts.py`, add `ABC` and `abstractmethod` to the imports (alongside the existing `from typing import Any, Callable, Protocol` line):
+
+```python
+from abc import ABC, abstractmethod
+```
+
+- [ ] Replace the `TTSSink` Protocol block (line ~93-100) with the ABC version:
+
+```python
+class TTSSink(ABC):
+    """Contract for downstream consumers of synthesized TTS chunks.
+
+    Promoted from a `Protocol` with an optional `is_enabled` to an ABC so
+    every sink — production (`LazyChannelTTSSink`), regression harness
+    (`DirectSink`), and test fakes — implements the same contract. The
+    hook can then call `self._sink.is_enabled(session_key)` directly,
+    with no `getattr` introspection and no implicit "always enabled"
+    fallback. A sink that forgets either method fails at construction
+    time with a clear `TypeError`, not at the dispatch hot path with an
+    `AttributeError`.
+    """
+
+    @abstractmethod
     async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
 
-    # Optional. When present and returning False, the hook skips synthesis
-    # entirely for this sentence — saving GPU / network traffic for clients
-    # that can't play audio. Sinks that don't implement this method are
-    # treated as "always enabled" for backward compatibility.
-    #
-    # The optional ``session_key`` argument lets sinks gate per-channel
-    # (see LazyChannelTTSSink): the hook always passes the active session's
-    # key, but the keyword has a None default so existing call sites and
-    # legacy mocks keep working.
-    # def is_enabled(self, session_key: str | None = None) -> bool: ...
+    @abstractmethod
+    def is_enabled(self, session_key: str | None) -> bool:
+        """Return True iff this sink is willing to deliver audio for the
+        given session. The hook calls this once at dispatch time and once
+        again inside the synth task (second-chance check), both with the
+        same ``state.session_key``. Sinks that don't care about the
+        channel implement this trivially (return True or check internal
+        state). ``session_key`` is required positionally — there is no
+        default; pass ``None`` explicitly when no key is available.
+        """
 ```
 
-- [ ] Update `_sink_is_enabled` (line ~232):
+- [ ] **Delete** the `_sink_is_enabled` helper (line ~232-234). It's no longer needed — the ABC contract guarantees `is_enabled` exists.
 
-```python
-def _sink_is_enabled(self, session_key: str | None = None) -> bool:
-    fn = getattr(self._sink, "is_enabled", None)
-    return not callable(fn) or fn(session_key)
-```
-
-- [ ] Update `_dispatch_sentence` (line ~236) — change the `_sink_is_enabled()` call to pass `state.session_key`, and pass `session_key=state.session_key` into the `_synth_and_emit` task:
+- [ ] Update `_dispatch_sentence` (line ~236) — replace `self._sink_is_enabled()` with a direct `self._sink.is_enabled(state.session_key)` call, and pass `session_key=state.session_key` into the `_synth_and_emit` task:
 
 ```python
 def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
     text, emotion = self._preprocessor.process(sentence)
     if not text or not any(ch.isalnum() for ch in text):
         return
-    if not self._sink_is_enabled(state.session_key):
+    if not self._sink.is_enabled(state.session_key):
         return
     reference_id = self._resolve_reference_id(state.session_key)
     sequence = state.sequence
@@ -878,7 +944,7 @@ def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
     state.pending.append(task)
 ```
 
-- [ ] Update `_synth_and_emit` (line ~255) — add `session_key` kwarg and use it in the second-chance check:
+- [ ] Update `_synth_and_emit` (line ~255) — replace `self._sink_is_enabled()` with a direct `self._sink.is_enabled(session_key)` call:
 
 ```python
 async def _synth_and_emit(
@@ -894,7 +960,7 @@ async def _synth_and_emit(
     # scheduled and task running (e.g. channel registers the stream as
     # off after dispatch). Re-checking with the same session_key avoids
     # a wasted synthesize() call.
-    if not self._sink_is_enabled(session_key):
+    if not self._sink.is_enabled(session_key):
         return
     try:
         audio_b64 = await self._synthesizer.synthesize(text, reference_id=reference_id)
@@ -915,24 +981,25 @@ async def _synth_and_emit(
         logger.exception("TTS sink emission failed (seq={})", sequence)
 ```
 
-### Step 4.4: Run new tests to verify pass
-
-- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py -k "session_key or sink_without_is_enabled or disabled_sink" -v`
-- [ ] Expected: 3 PASS — `test_dispatch_sentence_passes_session_key_to_is_enabled`, `test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump`, `test_sink_without_is_enabled_method_is_treated_as_always_enabled`.
-
-### Step 4.5: Run full hook tests for regressions
+### Step 4.4: Run new + existing tests
 
 - [ ] Run: `pytest tests/services/hooks/test_tts_hook.py -v`
-- [ ] Expected: all green. The pre-existing tests use the bare `_FakeSink` (no `is_enabled` method) and so exercise the backward-compat path automatically. Nothing else in this file should regress.
+- [ ] Expected: all green — the three new tests pass, and pre-existing tests using `_FakeSink` / `_FakeSinkWithEnableFlag` continue to pass because the updated fakes implement the new ABC contract trivially. If the pre-existing `test_is_enabled_false_skips_synthesis_entirely` (and its sibling) regress, double-check that `_FakeSinkWithEnableFlag.is_enabled` now takes `session_key: str | None` and returns `self._enabled` regardless of the key.
 
-### Step 4.6: Update `DirectSink` in the regression harness
+### Step 4.5: Update `DirectSink` in the regression harness
 
-The regression harness in `tests/regression/harness.py` defines its own sink and instantiates `TTSHook` directly, so it has a `is_enabled` call site outside `tests/services/hooks/`. The new TTSHook passes `session_key` positionally; without this update, regression tests (which run as part of Step 8.2 `pytest tests/ --ignore=tests/e2e`) raise `TypeError: is_enabled() takes 1 positional argument but 2 were given`.
+The regression harness in `tests/regression/harness.py` defines its own sink and instantiates `TTSHook` directly. With the ABC promotion, `DirectSink` must now (a) inherit `TTSSink` and (b) accept `session_key` positionally — without both, the regression suite (Step 8.2) fails at sink construction with `TypeError: Can't instantiate abstract class DirectSink ...`.
 
-- [ ] Open `tests/regression/harness.py`. Find the `DirectSink` class (around line 88) and update only the `is_enabled` signature — body unchanged:
+- [ ] Open `tests/regression/harness.py`. Add the `TTSSink` import alongside the existing `nanobot_runtime` imports:
 
 ```python
-class DirectSink:
+from nanobot_runtime.services.hooks.tts import TTSSink
+```
+
+- [ ] Find the `DirectSink` class (around line 88) and update both the class header and the `is_enabled` signature:
+
+```python
+class DirectSink(TTSSink):
     """Sink that forwards to a specific channel (not via module registry).
 
     Regression tests instantiate one channel per scenario and want to
@@ -944,42 +1011,51 @@ class DirectSink:
     def __init__(self, channel: DesktopMateChannel):
         self._channel = channel
 
-    def is_enabled(self, session_key: str | None = None) -> bool:
-        # Channel readiness doesn't depend on the key; the key is part of
-        # the new TTSHook → TTSSink protocol but the channel only needs
-        # to know whether its own current stream is enabled.
+    def is_enabled(self, session_key: str | None) -> bool:
+        # Channel readiness doesn't depend on the key; session_key is
+        # part of the TTSSink ABC contract so the regression harness
+        # exercises the same call shape as production sinks.
         return self._channel.is_tts_enabled_for_current_stream()
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
         await self._channel.send_tts_chunk(chunk)
 ```
 
-### Step 4.7: Run regression harness tests
+### Step 4.6: Run regression harness tests
 
 - [ ] Run: `pytest tests/regression/ -v`
-- [ ] Expected: all green. (No assertion changes in regression tests — only the sink signature, which they don't directly assert on.)
+- [ ] Expected: all green. (No assertion changes in regression tests — only the sink class header and `is_enabled` signature, which the tests don't directly assert on.)
 
-### Step 4.8: Commit
+### Step 4.7: Commit
 
 - [ ] Run:
 
 ```bash
 git add src/nanobot_runtime/services/hooks/tts.py tests/services/hooks/test_tts_hook.py tests/regression/harness.py
 git commit -m "$(cat <<'EOF'
-feat(tts): TTSHook threads session_key into sink.is_enabled
+feat(tts): promote TTSSink to ABC + thread session_key into is_enabled
 
-Three call-site updates in tts.py: _sink_is_enabled accepts session_key,
-_dispatch_sentence passes state.session_key, _synth_and_emit gains a
-session_key kwarg for the second-chance check. Hook constructor and
-existing per-session state lifecycle are unchanged.
+TTSSink moves from `Protocol` with an optional `is_enabled` to `abc.ABC`
+with `send_tts_chunk` and `is_enabled` as `@abstractmethod`. The hook
+calls `self._sink.is_enabled(state.session_key)` directly: no more
+`_sink_is_enabled` helper, no more `getattr` introspection, no more
+implicit "sink without is_enabled is always enabled" fallback. A sink
+missing either method now fails loud at construction time
+(`TypeError: Can't instantiate abstract class ...`), not at the dispatch
+hot path.
 
-Backward compat preserved: sinks that omit is_enabled entirely are still
-treated as always-enabled. Sinks that implement is_enabled with the new
-session_key kwarg (default None) work without further changes.
+`_dispatch_sentence` passes `state.session_key` to `is_enabled` (first
+pass) and to `_synth_and_emit` via a new kwarg; `_synth_and_emit`
+re-checks `is_enabled(session_key)` (second-chance check). Hook
+constructor and per-session state lifecycle unchanged.
 
-regression/harness.py DirectSink updated to match the new signature so
-the regression suite keeps passing — it was the only is_enabled call
-site outside the hook tests.
+Existing fakes (`_FakeSink`, `_FakeSinkWithEnableFlag`) and the
+regression `DirectSink` updated to inherit `TTSSink` and accept the
+`session_key: str | None` positional arg — these were the only sink
+implementations in the tree. The dropped backward-compat test
+(`test_sink_without_is_enabled_method_is_treated_as_always_enabled`) is
+replaced by `test_abc_rejects_sink_missing_required_methods`, which
+guards against silent `@abstractmethod` removal.
 
 Refs: docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md §5.2, §9
 
@@ -1482,18 +1558,18 @@ Performed inline against `docs/superpowers/specs/2026-04-26-tts-channel-gating-d
 | §5.5 tts_channel_modes.yml | Task 7 | Workspace-side, not committed to runtime repo |
 | §6 Data flow | Indirectly: Tasks 1–5 implement; Step 8.6 manually verifies | |
 | §7 Error handling — Boot | Task 1 (loader ValueErrors) + Task 5 (FileNotFoundError) | |
-| §7 Error handling — Runtime | Task 3 (mode-gate paths) + Task 4 (no-`is_enabled` fallback) | |
+| §7 Error handling — Runtime | Task 3 (mode-gate paths) + Task 4 (ABC enforces `is_enabled` exists — no fallback path; missing impl fails at construction time) | |
 | §8 Configuration | Tasks 5, 7 | All env vars renamed; YAML schema in §5.5 covered by Task 7 |
 | §9 Migration — `.env` | Task 7 Step 7.1 | |
 | §9 Migration — new YAML | Task 7 Step 7.2 | |
-| §9 Migration — repo file updates | Task 6 (4 renames) + Task 4 Step 4.6 (`harness.py` signature) | All five files in the table covered. Harness lands in Task 4 with the hook change so the regression suite never observes a signature mismatch. |
+| §9 Migration — repo file updates | Task 6 (4 renames) + Task 4 Step 4.5 (`harness.py` ABC inheritance + signature) | All five files in the table covered. Harness lands in Task 4 with the hook change so the regression suite never observes a signature mismatch. |
 | §10 Testing plan | Tasks 1–5 (each task includes its TDD tests) | |
 | §11 Verification criteria | Task 8 (all 9 items mapped to Steps 8.1–8.7) | Steps 8.8/8.9 add push + PR |
 | §12 Out of scope | Honoured: no AttachmentTTSHook, no LTM/IDLE rename, no multi-sink routing, no hot reload | |
 
 **Placeholder scan:** No "TBD"/"TODO"/"implement later". Task 4 was rewritten in v2 to use the test file's actual style (`_FakeChunker`/`_FakePreprocessor`/`_FakeSink`/`_FakeSynthesizer`/`_ctx` module-level fakes, plain `async def test_*` functions) plus a new `_GatedFakeSink` helper — no fictional `tts_hook_factory` fixture or `MagicMock`/`AsyncMock` style.
 
-**Type / signature consistency:** `ChannelModeMap.lookup(channel_name: str | None) -> TTSMode` — used identically in Task 1 (impl + tests), Task 3 (sink), Task 4 (test isolation). `_channel_from_session_key(session_key: str | None) -> str | None` — same signature in Task 2 helper, Task 3 sink consumer, Task 5 (no consumer; only used via sink). `is_enabled(session_key: str | None = None) -> bool` — same signature in Task 3 sink, Task 4 hook caller, Task 4 test mocks.
+**Type / signature consistency:** `ChannelModeMap.lookup(channel_name: str | None) -> TTSMode` — used identically in Task 1 (impl + tests), Task 3 (sink), Task 4 (test isolation). `_channel_from_session_key(session_key: str | None) -> str | None` — same signature in Task 2 helper, Task 3 sink consumer, Task 5 (no consumer; only used via sink). `TTSSink.is_enabled(session_key: str | None) -> bool` — `@abstractmethod`, no default, identical signature in Task 3 (`LazyChannelTTSSink`), Task 4 (`_FakeSink` / `_FakeSinkWithEnableFlag` / `_GatedFakeSink` / hook callers), and Task 4 Step 4.5 (`DirectSink`).
 
 **Scope:** Single PR. Ten files modified, two created, ~270 LOC implementation + ~150 LOC tests. Fits one review cycle.
 
