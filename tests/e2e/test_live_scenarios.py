@@ -131,10 +131,19 @@ async def test_c_long_response_yields_multiple_tts_chunks(gateway, live_client) 
         f"expected ≥2 tts_chunks for a long Korean reply; got {len(tts_frames)}, "
         f"frames={[f.get('text', '')[:40] for f in tts_frames]}"
     )
-    # Sequences must start at 0 and be strictly increasing.
+    # Sequences must start at 0 and be strictly increasing within each
+    # contiguous stream segment. Nanobot may emit multiple streams per
+    # conversational turn (each tool-call hop opens a fresh SentenceChunker
+    # with its own sequence space), so a 0 mid-list signals a stream
+    # boundary and is allowed.
     seqs = [f["sequence"] for f in tts_frames]
-    assert seqs == sorted(seqs) and seqs[0] == 0, seqs
-    assert len(set(seqs)) == len(seqs), seqs  # no duplicates
+    assert seqs[0] == 0, seqs
+    expected = 0
+    for s in seqs:
+        if s == 0:
+            expected = 0
+        assert s == expected, f"non-monotonic tts sequence at {s}; full seqs={seqs}"
+        expected += 1
 
 
 # ---------------------------------------------------------------------------

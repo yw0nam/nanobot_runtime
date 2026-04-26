@@ -202,6 +202,16 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             await self._send_frame(conn, StreamStartFrame(chat_id=msg.chat_id, proactive=proactive_flag))
             return
 
+        # Nanobot calls send() once per agent iteration, not just at the
+        # conversational turn boundary: tool-call hops produce an
+        # OutboundMessage with empty content and no _stream_end marker (just
+        # _tool_hint / _tool_events). Emitting stream_end on those would let
+        # FE consumers — and the live e2e harness — interpret each tool hop
+        # as the turn being complete and stop reading early. Only emit when
+        # nanobot explicitly marks the message as the stream end.
+        if not meta.get("_stream_end"):
+            return
+
         # We deliberately do NOT clear stream state here — TTS synthesis runs
         # concurrently and a tts_chunk may arrive after stream_end via the TTS
         # Barrier. Stream entries are cleared only when a new stream registers
@@ -225,6 +235,20 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         meta = metadata or {}
         stream_id = meta.get("_stream_id")
         proactive_flag: bool | None = True if meta.get("proactive") else None
+
+        # An empty delta marked _stream_end on a NEW stream_id means this is
+        # an iteration boundary that produced no user-visible text — typically
+        # a tool-call hop. Emitting stream_start + stream_end for it would let
+        # FE consumers (and the live e2e harness) interpret each tool hop as
+        # the turn being complete. Skip — only register / emit when actual
+        # content arrives.
+        if (
+            not delta
+            and meta.get("_stream_end")
+            and bool(stream_id)
+            and stream_id not in self._streams
+        ):
+            return
 
         # First delta for a new stream: register routing entry AND auto-emit
         # stream_start. Nanobot's channel manager never sets _stream_start
