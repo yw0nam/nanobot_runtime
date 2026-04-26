@@ -173,19 +173,27 @@ nanobot-runtime = { path = "./nanobot_runtime", editable = true }
 
 워크스페이스가 자체 entrypoint 파일을 둘 필요 없음. `nanobot-runtime` 이
 `nanobot-launcher` console script (`nanobot_runtime.launcher:main`) 를
-제공하므로 `uv sync` 후 바로 실행 가능. LTM + TTS + Idle hook 조립과
-`YURI_*` env var 매핑은 `nanobot_runtime/launcher.py` 안에 들어 있음.
+제공하므로 `uv sync` 후 바로 실행 가능. LTM + TTS + Idle hook 조립과 env
+var 매핑은 `nanobot_runtime/launcher.py` 안에 들어 있음.
+
+Env var 은 두 그룹:
+
+- **TTS (워크스페이스 중립)**: `TTS_ENABLED`, `TTS_URL`, `TTS_REF_AUDIO`,
+  `TTS_BARRIER_TIMEOUT`, `TTS_RULES_PATH`, `TTS_MODES_PATH`.
+- **워크스페이스-identity**: `YURI_LTM_URL`, `YURI_LTM_USER_ID`,
+  `YURI_IDLE_ENABLED`, `YURI_IDLE_TIMEOUT_S` 등. 두 번째 워크스페이스가
+  생기면 generic prefix 로 마이그레이션 가능 (TTS 가 그 패턴의 선례).
 
 워크스페이스가 hook 구성을 바꾸려면 두 가지 길:
-- **간단 케이스 (on/off, URL/타임아웃 변경)**: `.env` 의 `TTS_ENABLED`
-  `YURI_IDLE_ENABLED` `YURI_LTM_URL` `TTS_URL` 등 환경변수만 수정.
+
+- **간단 케이스 (on/off, URL/타임아웃 변경)**: `.env` 환경변수만 수정.
+- **채널별 TTS 모드 변경**: `<workspace>/resources/tts_channel_modes.yml`
+  편집 + launcher 재시작 — 자세한 절차는
+  [`operations.md` §4.5](./operations.md#45-새-채널--tts-모드-추가).
 - **구조 변경 (다른 hook set)**: `nanobot_runtime/launcher.py` 를 fork 해서
   자기 패키지로 복사 + 자체 console script 등록. 이 경우 위쪽 §4 의
-  patterns(`build_ltm_hooks` 사용법, `install_idle_system_job` 호출 규약)
+  patterns (`build_ltm_hooks` 사용법, `install_idle_system_job` 호출 규약)
   는 그대로 적용.
-
-env var 이름이 `YURI_*` 인 건 첫 워크스페이스 명을 따른 잔재 — 두 번째
-워크스페이스 도입 시 generic prefix 로 마이그레이션 예정.
 
 ### 4.5 자동 scaffold
 

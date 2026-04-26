@@ -152,7 +152,7 @@ curl -X POST http://127.0.0.1:<gateway-port>/api/sessions/<channel>%3A<chat_id>/
 채널이 디코드된 미디어를 unlink 하므로 rejected turn 의 파일이 디스크에
 잔류하지 않는다.
 nanobot 내장 `websocket` 채널과 `DesktopMateChannel` 모두 동일한 3개 라우트를
-노출한다 (DesktopMate 쪽은 `src/nanobot_runtime/channels/desktop_mate_rest.py`
+노출한다 (DesktopMate 쪽은 `src/nanobot_runtime/clients/desktop_mate_rest.py`
 에서 mirror 구현, 전체 키의 `desktop_mate:` prefix 로 자기 세션만 필터링).
 인증은 두 채널 모두 `?token=<>` 쿼리 파라미터 또는 `Authorization: Bearer <>`
 헤더를 재사용한다.
@@ -163,9 +163,11 @@ nanobot 내장 `websocket` 채널과 `DesktopMateChannel` 모두 동일한 3개 
 
 ### 4.1 새 hook 추가
 
-1. `src/nanobot_runtime/hooks/my_hook.py` 작성 — `AgentHook` 상속.
-2. `src/nanobot_runtime/hooks/__init__.py` 에서 re-export.
-3. TDD: `tests/test_my_hook.py` 먼저 RED 로 작성.
+1. `src/nanobot_runtime/services/hooks/my_hook.py` 작성 — `AgentHook` 상속.
+   복수 파일로 나눠야 하면 LTM 처럼 `services/hooks/my_hook/` 서브패키지로.
+2. `src/nanobot_runtime/services/hooks/__init__.py` 에서 re-export.
+3. TDD: `tests/services/hooks/test_my_hook.py` 먼저 RED 로 작성 (test 트리는
+   `src/` 와 디렉토리 구조를 미러링).
 4. 공통 조립이 필요하면 `build_ltm_hooks` 옆에 형제 factory 추가.
 
 ### 4.2 Schedule / Cron 추가
@@ -182,9 +184,11 @@ nanobot 내장 `CronService` 로 충분 — 이 레포에 별도 코드 없다. 
 
 ### 4.4 TTS 제외
 
-`TTSHook` 을 `_hooks_factory` 에서 빼거나, 프로젝트 차원에서 TTS 를 쓰지
-않는다면 `nanobot_runtime/tts/` 의존성 (`fast-bunkai` 등)도 가볍게
-쳐낼 수 있다. 다만 `pyproject.toml` 은 현재 tts 모듈을 포함한다.
+`TTS_ENABLED=0` 으로 끄거나 `TTSHook` 을 `_hooks_factory` 에서 빼거나,
+프로젝트 차원에서 TTS 를 쓰지 않는다면 `nanobot_runtime/services/tts/`
+의존성 (`fast-bunkai` 등)도 가볍게 쳐낼 수 있다. 다만 `pyproject.toml`
+은 현재 tts 모듈을 포함한다. 채널별로 끄는 것 (Slack 만 텍스트로) 은
+§4.5 모드 게이트로 해결한다.
 
 ### 4.5 새 채널 / TTS 모드 추가
 

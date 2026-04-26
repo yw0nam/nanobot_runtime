@@ -18,26 +18,39 @@ watcher. 개발은 이 저장소에서 하고, 각 workspace 는 `git clone` 해
 ```
 nanobot_runtime/
 ├── src/nanobot_runtime/
-│   ├── gateway.py              # run(hooks_factory=...) — Typer app 으로 dispatch
-│   ├── hooks/
-│   │   ├── ltm_args.py         # LTMArgumentsHook (wire-level id 교정)
-│   │   ├── ltm_client.py       # LTMMCPClient (FastMCP 어댑터)
-│   │   ├── ltm_consolidator.py # LTMSavingConsolidator + install_ltm_saving
-│   │   ├── ltm_injection.py    # LTMInjectionHook (before_iteration 검색·주입)
-│   │   ├── tts.py              # TTSHook (스트리밍 음성 합성)
-│   │   └── __init__.py         # build_ltm_hooks factory
-│   ├── proactive/
-│   │   └── idle.py             # IdleScanner + install_idle_system_job
-│   ├── channels/
-│   │   └── desktop_mate.py     # DesktopMate WS 채널 (예시 채널)
-│   └── tts/                    # SentenceChunker / Preprocessor / EmotionMapper / IrodoriClient
-├── tests/                      # pytest, `uv run pytest`
-├── scripts/sync-to-yuri.sh     # parent → workspace clone 동기화
-├── docs/                       # setup.md, operations.md
-└── pyproject.toml              # nanobot-ai 는 PyPI, path 의존 없음
+│   ├── gateway.py                # run(hooks_factory=...) — Typer app 으로 dispatch
+│   ├── launcher.py               # nanobot-launcher console script (LTM/TTS/Idle 조립)
+│   ├── core/                     # 인프라 (logger, error_classifier)
+│   ├── config/                   # Pydantic 설정 (desktop_mate, idle)
+│   ├── models/                   # 와이어 스키마 (DesktopMate WS 프로토콜)
+│   ├── clients/                  # 외부 HTTP/MCP 클라이언트 (irodori, ltm, desktop_mate_rest)
+│   └── services/                 # 비즈니스 로직
+│       ├── channels/
+│       │   ├── desktop_mate.py        # DesktopMate WS 채널 + LazyChannelTTSSink
+│       │   ├── desktop_mate_server.py # WS handshake / per-conn lifecycle mixin
+│       │   ├── desktop_mate_tts.py    # TTS 프레임 emit mixin
+│       │   └── desktop_mate_image.py  # 이미지 첨부 디코드/검증
+│       ├── hooks/
+│       │   ├── tts.py                 # TTSHook + TTSSink (ABC)
+│       │   └── ltm/
+│       │       ├── args.py            # LTMArgumentsHook (wire-level id 교정)
+│       │       ├── injection.py       # LTMInjectionHook (before_iteration 검색·주입)
+│       │       ├── consolidator.py    # LTMSavingConsolidator + install_ltm_saving
+│       │       └── __init__.py        # build_ltm_hooks factory
+│       ├── proactive/                 # IdleScanner + install_idle_system_job
+│       └── tts/
+│           ├── chunker.py             # SentenceChunker
+│           ├── preprocessor.py        # Preprocessor
+│           ├── emotion_mapper.py      # EmotionMapper (YAML rules)
+│           └── modes.py               # TTSMode + ChannelModeMap + load_channel_modes
+├── tests/                        # pytest (mirrors src/) + tests/regression/ + tests/e2e/
+├── scripts/sync-to-yuri.sh       # parent → workspace clone 동기화
+├── docs/                         # setup.md, operations.md
+└── pyproject.toml                # nanobot-ai 는 PyPI, path 의존 없음
 ```
 
 새 워크스페이스 만들기 → [`docs/setup.md`](./docs/setup.md).
+새 채널 / TTS 모드 추가 → [`docs/operations.md` §4.5](./docs/operations.md#45-새-채널--tts-모드-추가).
 
 ## 왜 이렇게 되어 있는가 (non-obvious 한 부분)
 
@@ -71,11 +84,29 @@ nanobot_runtime/
   `run_gateway.py` 를 두지 않고 `nanobot-launcher` console script
   (`nanobot_runtime.launcher:main`) 를 그대로 쓴다. 덕분에 워크스페이스
   디렉토리는 `nanobot.json` + `.env` + `resources/` 만 들고 있는 throwaway
-  세팅으로 유지 가능. Launcher 안의 모든 default path (`tts_rules.yml` 등)
-  는 `__file__` 이 아니라 **cwd 기준** 으로 resolve 한다 — 그래야 패키지
-  안에 살면서도 워크스페이스의 `resources/` 를 가리킬 수 있다. 하드코딩된
-  `YURI_*` env var prefix 는 첫 워크스페이스 명을 따른 잔재 (두 번째
-  워크스페이스 도입 시 generic prefix 로 마이그레이션 예정).
+  세팅으로 유지 가능. Launcher 안의 모든 default path (`tts_rules.yml`,
+  `tts_channel_modes.yml`) 는 `__file__` 이 아니라 **cwd 기준** 으로
+  resolve 한다 — 그래야 패키지 안에 살면서도 워크스페이스의 `resources/`
+  를 가리킬 수 있다.
+
+- **Env var prefix 는 두 그룹으로 갈라져 있다.** TTS 관련은 워크스페이스
+  중립 런타임이라는 이유로 `TTS_*` (`TTS_ENABLED`, `TTS_URL`,
+  `TTS_RULES_PATH`, `TTS_MODES_PATH`, `TTS_BARRIER_TIMEOUT`,
+  `TTS_REF_AUDIO`). LTM/Idle 등 워크스페이스-identity 관련은 첫 워크
+  스페이스 명을 그대로 따서 `YURI_*` prefix 를 유지 (`YURI_LTM_URL`,
+  `YURI_IDLE_*`). 두 번째 워크스페이스가 생기면 후자도 generic prefix 로
+  마이그레이션 가능 — TTS 쪽 마이그레이션 패턴 (`feat/tts-channel-gating`)
+  이 그대로 템플릿 역할을 한다.
+
+- **TTS 디스패치는 채널-mode 게이트를 거친다.** `TTSHook` 가 모든 turn 에
+  `on_stream` 을 받지만, 실제 합성 여부는 sink 의 `is_enabled(session_key)`
+  가 결정한다 — `LazyChannelTTSSink` 는 부팅 시 로드된 `ChannelModeMap`
+  으로 `<channel>:<chat_id>` 의 channel prefix 를 lookup 해서 mode 가
+  `STREAMING` 이 아니면 short-circuit. Slack/Discord 같은 텍스트-only
+  채널은 synth 호출 자체가 안 일어나서 GPU 낭비도 없고 desktop_mate 채널
+  쪽으로 audio leak 도 안 난다. 모드 선언은 워크스페이스의
+  `resources/tts_channel_modes.yml`. 새 채널 추가 절차는
+  [`docs/operations.md` §4.5](./docs/operations.md#45-새-채널--tts-모드-추가).
 
 - **Channel 은 nanobot 의 매 iteration end 를 wire 의 `stream_end` 로
   번역하지 않는다.** Tool-call hop 마다 nanobot 은 빈 content 의
@@ -108,7 +139,11 @@ gate keeper (정식: clean+pushed 검사 후 ff-only, 긴급: rsync+reminder).
 
 ## 새 Hook 추가 가이드
 
-1. `src/nanobot_runtime/hooks/my_hook.py` 작성 — `AgentHook` 상속
-2. `src/nanobot_runtime/hooks/__init__.py` 에서 re-export
-3. TDD: `tests/test_my_hook.py` 먼저 RED 로 작성
-4. (선택) 공통 factory 가 필요하면 `build_ltm_hooks` 옆에 형제 factory 추가
+1. `src/nanobot_runtime/services/hooks/my_hook.py` 작성 — `AgentHook` 상속.
+   복수 파일로 나눠야 하면 LTM 처럼 `services/hooks/my_hook/` 서브패키지로.
+2. `src/nanobot_runtime/services/hooks/__init__.py` 에서 re-export.
+3. TDD: `tests/services/hooks/test_my_hook.py` 먼저 RED 로 작성 (test 트리는
+   `src/` 와 디렉토리 구조를 미러링한다).
+4. (선택) 공통 factory 가 필요하면 `build_ltm_hooks` 옆에 형제 factory 추가.
+
+새 채널 / TTS 모드 추가는 별개 절차 — [`docs/operations.md` §4.5](./docs/operations.md#45-새-채널--tts-모드-추가).
