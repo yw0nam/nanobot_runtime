@@ -89,7 +89,7 @@ YURI_IDLE_TIMEOUT_S=10 \
 YURI_IDLE_SCAN_INTERVAL_S=3 \
 YURI_IDLE_COOLDOWN_S=60 \
 YURI_IDLE_QUIET_START= YURI_IDLE_QUIET_END= \
-.venv/bin/python run_gateway.py
+.venv/bin/nanobot-launcher
 ```
 
 WS 클라이언트로 메시지 1개 보내고 15초 대기 — 자발 `stream_start →
@@ -102,7 +102,7 @@ delta → stream_end` 가 들어오면 OK. (`YURI_...` 대신 워크스페이스
 
 | 무엇 | 어디 |
 |---|---|
-| Gateway stdout/stderr (프로덕션) | `run_gateway.py` 띄운 터미널 |
+| Gateway stdout/stderr (프로덕션) | `nanobot-launcher` 띄운 터미널 |
 | E2E 서브프로세스 로그 | `/tmp/yuri_e2e_gateway.log` |
 | 대화 세션 히스토리 | `<workspace>/sessions/<safe_key>.jsonl` (첫 줄 metadata, 이후 message 단위) |
 | LTM persistent | Qdrant 볼륨 (`ltm_qdrant` docker volume) + Neo4j 컨테이너 내부 |
@@ -251,6 +251,44 @@ lsof -iTCP:<port> -sTCP:LISTEN
 - `LTMSavingConsolidator` 는 `loop.consolidator.archive` 바인딩만 재지정
   한다. 인스턴스 자체를 재래핑하면 AutoCompact 의 stale reference 때문에
   archive 경로가 두 번 흐를 수 있다 — README invariant 참조.
+
+### E2E 가 startup 직후 죽는다 (`Environment variable 'X' is not set`)
+
+- E2E fixture 는 `os.environ.copy()` 만 자식 프로세스에 넘긴다 — `.env`
+  를 자동 로드하지 않는다. 워크스페이스 루트에서
+  `set -a && source .env && set +a` 후 pytest 를 다시 실행한다. 누락 변수는
+  보통 `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` (DesktopMate-only 워크스페이스라
+  쓰지 않더라도 `nanobot.json` 의 `channels.slack.enabled=true` 에서 참조).
+
+### E2E 가 "no yuri workspace found" 로 전부 skip 된다
+
+- `tests/e2e/conftest.py` 의 default workspace 탐색은 `<repo>/../yuri` 를
+  찾는다. `nanobot_runtime/` 가 워크스페이스 *안*에 nested 되어 있으면
+  (로컬 dev 의 일반적인 구조) 이 default 가 안 맞는다. 워크스페이스
+  루트에서 `YURI_WORKSPACE=$PWD` 명시 후 실행.
+
+### gateway 로그에 `send_delta: no connection for chat_id=…`
+
+- 채널이 outbound delta 를 보내려는데 그 chat_id 에 active WS 연결이
+  없다는 뜻. 실제 운영 중에는 FE 가 reconnect 하기 전에 agent 가
+  proactive nudge 를 보냈거나, FE 가 read-only 로 닫고 떠난 경우.
+- E2E 에서 자주 만나는 패턴: 테스트가 너무 일찍 close 했거나
+  intermediate `stream_end` 에 의존해서 turn 종료를 잘못 판단한 경우.
+  README invariant ("intermediate empty stream_end 는 wire 에 안 나간다")
+  와 합쳐서 본다 — 채널이 내려보내지 않으면 FE 도 그걸 보고 close
+  하지 않을 것.
+
+### TTS chunk sequence 가 `[0, 1, 2, 0]` 처럼 0 으로 다시 시작한다
+
+- 버그 아님 (현재 nanobot pin 한정). `TTSHook._SessionState` 는 코드상
+  `on_stream_end(resuming=False)` 에서만 sequence 를 0 으로 리셋해야 하지만,
+  현 nanobot 버전이 multi-iteration turn 의 매 iteration 끝에서
+  `resuming=False` 를 emit 하고 있어 segment 단위 reset 이 wire 에 그대로
+  관찰된다. FE / 테스트는 0 를 새 segment 의 시작으로 간주하고 segment
+  단위 monotonicity 만 검증한다 (테스트 C 의 assertion 패턴 참조).
+  nanobot 의 `resuming` semantics 가 의도대로 (true=중간, false=종료)
+  돌아오면 single-segment 로 회귀할 수 있다 — 그때 테스트는 자동으로
+  통과 (segment 1개여도 monotonic 만족).
 
 ---
 

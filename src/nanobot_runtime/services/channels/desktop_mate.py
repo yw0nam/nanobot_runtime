@@ -202,6 +202,28 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             await self._send_frame(conn, StreamStartFrame(chat_id=msg.chat_id, proactive=proactive_flag))
             return
 
+        # Nanobot calls send() once per agent iteration, not just at the
+        # conversational turn boundary: tool-call hops produce an
+        # OutboundMessage with empty content and no _stream_end marker (just
+        # _tool_hint / _tool_events). Emitting stream_end on those would let
+        # FE consumers — and the live e2e harness — interpret each tool hop
+        # as the turn being complete and stop reading early. Only emit when
+        # nanobot explicitly marks the message as the stream end.
+        if not meta.get("_stream_end"):
+            # Defensive: log when the message lacks BOTH the _stream_end
+            # marker AND any tool-hint metadata. That shape would surface
+            # if nanobot upstream renamed _stream_end or stopped tagging
+            # the terminal OutboundMessage — without this log, the FE would
+            # silently hang waiting for stream_end forever.
+            if not (meta.get("_tool_hint") or meta.get("_tool_events")):
+                logger.warning(
+                    "desktop_mate: send() with neither _stream_end nor tool "
+                    "metadata (chat_id={}, content_len={}) — possible nanobot "
+                    "shape change; FE may hang. meta_keys={}",
+                    msg.chat_id, len(msg.content or ""), list(meta.keys()),
+                )
+            return
+
         # We deliberately do NOT clear stream state here — TTS synthesis runs
         # concurrently and a tts_chunk may arrive after stream_end via the TTS
         # Barrier. Stream entries are cleared only when a new stream registers
@@ -225,6 +247,27 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         meta = metadata or {}
         stream_id = meta.get("_stream_id")
         proactive_flag: bool | None = True if meta.get("proactive") else None
+
+        # An empty delta marked _stream_end on a NEW stream_id means this is
+        # an iteration boundary that produced no user-visible text — typically
+        # a tool-call hop. Emitting stream_start + stream_end for it would let
+        # FE consumers (and the live e2e harness) interpret each tool hop as
+        # the turn being complete. Skip — only register / emit when actual
+        # content arrives.
+        #
+        # Trade-off: a hypothetical "agent generates literally zero tokens
+        # and only emits the terminal marker on a brand-new stream" turn
+        # would also be silently dropped. That shape is not produced by
+        # nanobot today; if it ever is, the symptom is "FE never sees
+        # stream_end for that turn." Distinguishing it from a tool-call
+        # hop would require a new metadata flag from nanobot.
+        if (
+            not delta
+            and meta.get("_stream_end")
+            and bool(stream_id)
+            and stream_id not in self._streams
+        ):
+            return
 
         # First delta for a new stream: register routing entry AND auto-emit
         # stream_start. Nanobot's channel manager never sets _stream_start

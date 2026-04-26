@@ -221,6 +221,104 @@ async def test_frame_ordering_delta_tts_stream_end():
 
 
 # ---------------------------------------------------------------------------
+# 4a. send() suppresses iteration-boundary OutboundMessages (no _stream_end)
+# ---------------------------------------------------------------------------
+
+
+async def test_send_suppresses_intermediate_iteration_outbound():
+    """Nanobot calls send() once per iteration. Tool-call hops produce an
+    OutboundMessage with no _stream_end marker (just _tool_hint /
+    _tool_events). The channel must NOT emit a stream_end frame for those
+    — FE / e2e would otherwise interpret each tool hop as the turn being
+    complete and stop reading early.
+    """
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    msg = OutboundMessage(
+        channel="desktop_mate",
+        chat_id="chat-A",
+        content="",
+        metadata={"_stream_id": "s-iter-1", "_tool_hint": "search", "_tool_events": []},
+    )
+    await channel.send(msg)
+
+    assert _decode_frames(conn) == []  # nothing on the wire
+
+
+async def test_send_with_explicit_stream_end_still_emits():
+    """Negative control for the suppression above: an OutboundMessage that
+    *does* carry _stream_end must produce a stream_end frame, even with
+    empty content."""
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    msg = OutboundMessage(
+        channel="desktop_mate",
+        chat_id="chat-A",
+        content="",
+        metadata={"_stream_end": True, "_stream_id": "s-1"},
+    )
+    await channel.send(msg)
+
+    frames = _decode_frames(conn)
+    assert len(frames) == 1 and frames[0]["event"] == "stream_end"
+
+
+# ---------------------------------------------------------------------------
+# 4a-2. send_delta() drops empty _stream_end on a brand-new stream_id
+# ---------------------------------------------------------------------------
+
+
+async def test_send_delta_drops_empty_stream_end_on_new_stream_id():
+    """Counterpart to the send() suppression: nanobot also marks intermediate
+    iteration boundaries by calling send_delta() with an empty delta, a
+    fresh stream_id, and _stream_end:True. The naive path would emit a
+    stream_start + stream_end pair — both empty — which again looks like a
+    completed turn to consumers.
+    """
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    await channel.send_delta(
+        "chat-A",
+        "",
+        {"_stream_id": "s-new", "_stream_end": True},
+    )
+
+    assert _decode_frames(conn) == []
+    # The dropped marker must not register the stream either; otherwise a
+    # subsequent legitimate send_delta with the same id would skip the
+    # auto-stream_start that FE depends on.
+    assert "s-new" not in channel._streams
+
+
+async def test_send_delta_empty_stream_end_on_existing_stream_still_emits():
+    """Negative control: an empty _stream_end on an *existing* stream_id is
+    the legitimate end-of-streaming finalizer (the deltas already streamed
+    under this id) and must produce a stream_end frame."""
+    channel, _ = _make_channel()
+    conn = FakeConnection()
+    channel._attach("chat-A", conn)
+
+    meta_delta = {"_stream_delta": True, "_stream_id": "s-1"}
+    await channel.send_delta("chat-A", "hello", meta_delta)
+    conn.sent.clear()
+
+    await channel.send_delta(
+        "chat-A",
+        "",
+        {"_stream_id": "s-1", "_stream_end": True},
+    )
+
+    frames = _decode_frames(conn)
+    assert len(frames) == 1 and frames[0]["event"] == "stream_end"
+
+
+# ---------------------------------------------------------------------------
 # 4b. stream_start auto-emitted on first delta with a new stream_id
 # ---------------------------------------------------------------------------
 
