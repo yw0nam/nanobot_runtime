@@ -24,11 +24,45 @@ streaming timing, Irodori synthesis latency, and LTM MCP roundtrips.
 When any of the above is missing the tests skip; you can run
 `pytest tests/e2e/ -m e2e -v` to see the skip reasons.
 
+## Pre-flight checklist (non-obvious)
+
+These trip people up the first time:
+
+- **Two separate `uv sync`s.** `nanobot_runtime/.venv` (this directory)
+  needs the `dev` group for pytest + pytest-asyncio + pytest-httpx.
+  The workspace's `.venv` only carries the runtime + the
+  `nanobot-launcher` entry point. The fixture spawns the gateway via
+  the **workspace** python, but pytest itself runs in **this**
+  directory's venv.
+- **`.env` must be exported into the shell.** The fixture passes
+  `os.environ.copy()` to the gateway subprocess but does NOT load
+  `.env`. If `nanobot.json` references `${SLACK_BOT_TOKEN}` (or any
+  other env var) the gateway exits with `Environment variable
+  '...' is not set` during startup. Source the workspace's `.env`
+  first:
+
+  ```bash
+  cd <workspace> && set -a && source .env && set +a
+  ```
+- **`YURI_WORKSPACE` is mandatory when `nanobot_runtime/` is nested
+  inside the workspace.** The conftest default looks for a *sibling*
+  `../yuri/`. When the runtime lives at `<workspace>/nanobot_runtime/`
+  (the typical local-dev layout), set `YURI_WORKSPACE=$PWD` from the
+  workspace root before invoking pytest, otherwise the fixture skips
+  with "no yuri workspace found."
+- **The model is non-deterministic about tool calls.** Scenarios that
+  store-then-recall (F) or do long generation (C) will sometimes
+  trigger several `mcp_ltm_search_memory` / `web_search` hops before
+  the final reply. The drain windows in those tests are sized for
+  multi-iteration turns — don't trim them blindly.
+
 ## Running
 
 ```bash
-cd nanobot_runtime
-.venv/bin/python -m pytest tests/e2e/ -m e2e -v
+cd <workspace>
+set -a && source .env && set +a    # see pre-flight checklist above
+YURI_WORKSPACE=$PWD nanobot_runtime/.venv/bin/python -m pytest \
+    nanobot_runtime/tests/e2e/ -m e2e -v
 ```
 
 `-m e2e` is required — the suite is **not** collected by the default

@@ -252,6 +252,39 @@ lsof -iTCP:<port> -sTCP:LISTEN
   한다. 인스턴스 자체를 재래핑하면 AutoCompact 의 stale reference 때문에
   archive 경로가 두 번 흐를 수 있다 — README invariant 참조.
 
+### E2E 가 startup 직후 죽는다 (`Environment variable 'X' is not set`)
+
+- E2E fixture 는 `os.environ.copy()` 만 자식 프로세스에 넘긴다 — `.env`
+  를 자동 로드하지 않는다. 워크스페이스 루트에서
+  `set -a && source .env && set +a` 후 pytest 를 다시 실행한다. 누락 변수는
+  보통 `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` (DesktopMate-only 워크스페이스라
+  쓰지 않더라도 `nanobot.json` 의 `channels.slack.enabled=true` 에서 참조).
+
+### E2E 가 "no yuri workspace found" 로 전부 skip 된다
+
+- `tests/e2e/conftest.py` 의 default workspace 탐색은 `<repo>/../yuri` 를
+  찾는다. `nanobot_runtime/` 가 워크스페이스 *안*에 nested 되어 있으면
+  (로컬 dev 의 일반적인 구조) 이 default 가 안 맞는다. 워크스페이스
+  루트에서 `YURI_WORKSPACE=$PWD` 명시 후 실행.
+
+### gateway 로그에 `send_delta: no connection for chat_id=…`
+
+- 채널이 outbound delta 를 보내려는데 그 chat_id 에 active WS 연결이
+  없다는 뜻. 실제 운영 중에는 FE 가 reconnect 하기 전에 agent 가
+  proactive nudge 를 보냈거나, FE 가 read-only 로 닫고 떠난 경우.
+- E2E 에서 자주 만나는 패턴: 테스트가 너무 일찍 close 했거나
+  intermediate `stream_end` 에 의존해서 turn 종료를 잘못 판단한 경우.
+  README invariant ("intermediate empty stream_end 는 wire 에 안 나간다")
+  와 합쳐서 본다 — 채널이 내려보내지 않으면 FE 도 그걸 보고 close
+  하지 않을 것.
+
+### TTS chunk sequence 가 `[0, 1, 2, 0]` 처럼 0 으로 다시 시작한다
+
+- 버그 아님. Multi-iteration turn (tool call 끼인 응답) 에서는 nanobot 이
+  새 stream_id 를 발급하고 `SentenceChunker` 는 stream 단위로 sequence 를
+  리셋한다. FE / 테스트는 0 가 새 stream segment 의 시작이라고 가정하고
+  segment 단위로 monotonic 검증한다 (테스트 C 의 assertion 패턴 참조).
+
 ---
 
 ## 6. 관련 문서
