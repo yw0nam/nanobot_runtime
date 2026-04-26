@@ -31,6 +31,7 @@ sentences never consume a sequence number. When ``session_key`` is ``None``
 to a shared ``_default`` state bucket and emits a warning once.
 """
 import asyncio
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -90,14 +91,32 @@ class TTSSynthesizer(Protocol):
 ReferenceIdResolver = Callable[[str | None], str | None]
 
 
-class TTSSink(Protocol):
+class TTSSink(ABC):
+    """Contract for downstream consumers of synthesized TTS chunks.
+
+    Promoted from a `Protocol` with an optional `is_enabled` to an ABC so
+    every sink — production (`LazyChannelTTSSink`), regression harness
+    (`DirectSink`), and test fakes — implements the same contract. The
+    hook can then call `self._sink.is_enabled(session_key)` directly,
+    with no `getattr` introspection and no implicit "always enabled"
+    fallback. A sink that forgets either method fails at construction
+    time with a clear `TypeError`, not at the dispatch hot path with an
+    `AttributeError`.
+    """
+
+    @abstractmethod
     async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
 
-    # Optional. When present and returning False, the hook skips synthesis
-    # entirely for this sentence — saving GPU / network traffic for clients
-    # that can't play audio. Sinks that don't implement this method are
-    # treated as "always enabled" for backward compatibility.
-    # def is_enabled(self) -> bool: ...
+    @abstractmethod
+    def is_enabled(self, session_key: str | None) -> bool:
+        """Return True iff this sink is willing to deliver audio for the
+        given session. The hook calls this once at dispatch time and once
+        again inside the synth task (second-chance check), both with the
+        same ``state.session_key``. Sinks that don't care about the
+        channel implement this trivially (return True or check internal
+        state). ``session_key`` is required positionally — there is no
+        default; pass ``None`` explicitly when no key is available.
+        """
 
 
 # ── Per-session state ─────────────────────────────────────────────────────
@@ -229,17 +248,11 @@ class TTSHook(AgentHook):
             logger.exception("TTSHook reference_id resolver raised (session={})", session_key)
             return None
 
-    def _sink_is_enabled(self) -> bool:
-        fn = getattr(self._sink, "is_enabled", None)
-        return not callable(fn) or fn()
-
     def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
         text, emotion = self._preprocessor.process(sentence)
         if not text or not any(ch.isalnum() for ch in text):
             return
-        # Sinks without is_enabled() are treated as always-enabled.
-        # We drop silently — no task, no synthesis, no sequence bump.
-        if not self._sink_is_enabled():
+        if not self._sink.is_enabled(state.session_key):
             return
         # Resolve voice up-front so a per-tick state change in the channel
         # (e.g. user re-sends with a different reference_id mid-stream) does
@@ -248,7 +261,13 @@ class TTSHook(AgentHook):
         sequence = state.sequence
         state.sequence += 1
         task = asyncio.create_task(
-            self._synth_and_emit(text, emotion, sequence, reference_id=reference_id)
+            self._synth_and_emit(
+                text,
+                emotion,
+                sequence,
+                session_key=state.session_key,
+                reference_id=reference_id,
+            )
         )
         state.pending.append(task)
 
@@ -258,12 +277,14 @@ class TTSHook(AgentHook):
         emotion: str | None,
         sequence: int,
         *,
+        session_key: str | None,
         reference_id: str | None = None,
     ) -> None:
         # Second-chance check: sink's enabled state can change between task
         # scheduled and task running (e.g. channel registers the stream as
-        # off after dispatch). Re-checking avoids a wasted synthesize() call.
-        if not self._sink_is_enabled():
+        # off after dispatch). Re-checking with the same session_key avoids
+        # a wasted synthesize() call.
+        if not self._sink.is_enabled(session_key):
             return
         try:
             audio_b64 = await self._synthesizer.synthesize(text, reference_id=reference_id)

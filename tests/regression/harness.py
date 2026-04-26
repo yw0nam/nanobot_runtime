@@ -24,7 +24,7 @@ from nanobot_runtime.services.channels.desktop_mate import (
     DesktopMateConfig,
     _reset_registry_for_tests,
 )
-from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook
+from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook, TTSSink
 from nanobot_runtime.services.tts.chunker import SentenceChunker
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
 from nanobot_runtime.services.tts.preprocessor import Preprocessor
@@ -85,7 +85,7 @@ class RecordingSynthesizer:
         return "QUJDRA=="  # "ABCD"
 
 
-class DirectSink:
+class DirectSink(TTSSink):
     """Sink that forwards to a specific channel (not via module registry).
 
     Regression tests instantiate one channel per scenario and want to
@@ -97,7 +97,10 @@ class DirectSink:
     def __init__(self, channel: DesktopMateChannel):
         self._channel = channel
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self, session_key: str | None) -> bool:
+        # Channel readiness doesn't depend on the key; session_key is
+        # part of the TTSSink ABC contract so the regression harness
+        # exercises the same call shape as production sinks.
         return self._channel.is_tts_enabled_for_current_stream()
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
