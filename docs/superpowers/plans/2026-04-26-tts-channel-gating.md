@@ -33,7 +33,7 @@
 
 `docs/operations.md`, top-level `README.md`, and other lines in `tests/e2e/README.md` reference only `YURI_IDLE_*` / `YURI_WORKSPACE`, which are out of scope for this PR per the spec §2 non-goals.
 
-**Branch:** Continue on `design/tts-channel-gating` (already contains the spec). All commits land on this branch; merge as a single PR.
+**Branch:** Continue on `feat/tts-channel-gating` (already contains the spec). All commits land on this branch; merge as a single PR.
 
 ---
 
@@ -1428,7 +1428,7 @@ git ls-files | xargs grep -l 'YURI_TTS_' | grep -v 'docs/superpowers/specs/2026-
 
 ### Step 8.8: Push the branch
 
-- [ ] Run: `git push -u origin design/tts-channel-gating`
+- [ ] Run: `git push -u origin feat/tts-channel-gating`
 
 ### Step 8.9: Open the PR
 
