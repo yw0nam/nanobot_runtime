@@ -19,11 +19,22 @@ from nanobot_runtime.services.channels.desktop_mate import (
     get_desktop_mate_channel,
 )
 from nanobot_runtime.services.hooks.tts import TTSChunk
+from nanobot_runtime.services.tts.modes import ChannelModeMap, TTSMode
 
 
 class _FakeBus:
     async def publish_inbound(self, _msg: Any) -> None: ...
     async def publish_outbound(self, _msg: Any) -> None: ...
+
+
+def _streaming_map() -> ChannelModeMap:
+    """ChannelModeMap that lets desktop_mate stream — used by tests
+    that exercise the lazy sink against a real DesktopMateChannel.
+    """
+    return ChannelModeMap(
+        default=TTSMode.NONE,
+        channels={"desktop_mate": TTSMode.STREAMING},
+    )
 
 
 def setup_function(_fn):
@@ -62,7 +73,7 @@ async def test_lazy_sink_drops_chunk_when_channel_absent(caplog):
     """If ChannelManager hasn't built the channel yet, dropping must be silent
     at INFO level (FE will simply miss audio for that stream) rather than
     raising and breaking the agent loop."""
-    sink = LazyChannelTTSSink()
+    sink = LazyChannelTTSSink(mode_map=_streaming_map())
     chunk = TTSChunk(
         sequence=0,
         text="hi",
@@ -77,8 +88,8 @@ async def test_lazy_sink_drops_chunk_when_channel_absent(caplog):
 async def test_lazy_sink_is_enabled_defaults_true_when_no_channel():
     """Before any channel is constructed, default is 'enabled' so the
     hook doesn't accidentally suppress TTS in test setups."""
-    sink = LazyChannelTTSSink()
-    assert sink.is_enabled() is True
+    sink = LazyChannelTTSSink(mode_map=_streaming_map())
+    assert sink.is_enabled("desktop_mate:chat-A") is True
 
 
 def test_channel_reports_tts_enabled_via_current_stream():
@@ -123,8 +134,8 @@ async def test_lazy_sink_is_enabled_forwards_to_channel():
     channel._current_stream_id = "s-1"
     channel._tts_enabled_per_chat["chat-A"] = False
 
-    sink = LazyChannelTTSSink()
-    assert sink.is_enabled() is False
+    sink = LazyChannelTTSSink(mode_map=_streaming_map())
+    assert sink.is_enabled("desktop_mate:chat-A") is False
 
 
 async def test_lazy_sink_forwards_to_registered_channel():
@@ -143,7 +154,7 @@ async def test_lazy_sink_forwards_to_registered_channel():
     channel._streams["s-1"] = ("chat-A", False)
     channel._current_stream_id = "s-1"
 
-    sink = LazyChannelTTSSink()
+    sink = LazyChannelTTSSink(mode_map=_streaming_map())
     await sink.send_tts_chunk(TTSChunk(
         sequence=3,
         text="hello",
