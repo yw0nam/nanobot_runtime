@@ -280,10 +280,15 @@ lsof -iTCP:<port> -sTCP:LISTEN
 
 ### TTS chunk sequence 가 `[0, 1, 2, 0]` 처럼 0 으로 다시 시작한다
 
-- 버그 아님. Multi-iteration turn (tool call 끼인 응답) 에서는 nanobot 이
-  새 stream_id 를 발급하고 `SentenceChunker` 는 stream 단위로 sequence 를
-  리셋한다. FE / 테스트는 0 가 새 stream segment 의 시작이라고 가정하고
-  segment 단위로 monotonic 검증한다 (테스트 C 의 assertion 패턴 참조).
+- 버그 아님 (현재 nanobot pin 한정). `TTSHook._SessionState` 는 코드상
+  `on_stream_end(resuming=False)` 에서만 sequence 를 0 으로 리셋해야 하지만,
+  현 nanobot 버전이 multi-iteration turn 의 매 iteration 끝에서
+  `resuming=False` 를 emit 하고 있어 segment 단위 reset 이 wire 에 그대로
+  관찰된다. FE / 테스트는 0 를 새 segment 의 시작으로 간주하고 segment
+  단위 monotonicity 만 검증한다 (테스트 C 의 assertion 패턴 참조).
+  nanobot 의 `resuming` semantics 가 의도대로 (true=중간, false=종료)
+  돌아오면 single-segment 로 회귀할 수 있다 — 그때 테스트는 자동으로
+  통과 (segment 1개여도 monotonic 만족).
 
 ---
 

@@ -12,7 +12,6 @@ installed as a console script in a workspace ``.venv``.
 """
 import os
 
-from loguru import logger
 from nanobot.agent.hook import AgentHook
 from nanobot.agent.loop import AgentLoop
 
@@ -28,7 +27,18 @@ from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
 from nanobot_runtime.services.tts.preprocessor import Preprocessor
 
 
-_DEFAULT_TTS_RULES_PATH = os.path.join(os.getcwd(), "resources", "tts_rules.yml")
+def _resolve_tts_rules_path() -> str:
+    """Resolve the TTS rules YAML path at call time, not import time.
+
+    Defaults to ``<cwd>/resources/tts_rules.yml`` so the launcher — which
+    lives inside the package, not next to the workspace — picks up the
+    workspace's own rules. Resolved per call so test harnesses that
+    `chdir` after import still get the right path.
+    """
+    return os.getenv(
+        "YURI_TTS_RULES_PATH",
+        os.path.join(os.getcwd(), "resources", "tts_rules.yml"),
+    )
 
 
 def _build_tts_hook() -> TTSHook:
@@ -38,10 +48,21 @@ def _build_tts_hook() -> TTSHook:
     channel start-up order — the channel is resolved per-chunk at send
     time. If TTS is fully disabled for a workspace, set ``YURI_TTS_ENABLED=0``
     and the factory returns no TTS hook.
+
+    A missing TTS rules YAML is treated as a misconfiguration, not a
+    degraded mode — :class:`EmotionMapper.from_yaml` would otherwise
+    silently fall back to an empty map. We pre-check existence so the
+    operator gets a loud, actionable failure at startup.
     """
-    emotion_mapper = EmotionMapper.from_yaml(
-        os.getenv("YURI_TTS_RULES_PATH", _DEFAULT_TTS_RULES_PATH)
-    )
+    rules_path = _resolve_tts_rules_path()
+    if not os.path.exists(rules_path):
+        raise FileNotFoundError(
+            f"TTS rules YAML not found at {rules_path!r}. Set "
+            "YURI_TTS_RULES_PATH or place the file at "
+            "<workspace>/resources/tts_rules.yml. To run without TTS set "
+            "YURI_TTS_ENABLED=0."
+        )
+    emotion_mapper = EmotionMapper.from_yaml(rules_path)
     synthesizer = IrodoriClient(
         base_url=os.getenv("YURI_TTS_URL", "http://192.168.0.41:8091"),
         reference_id=os.getenv("YURI_TTS_REF_AUDIO"),
@@ -104,14 +125,21 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
     idle_config = _build_idle_config()
     if idle_config.enabled:
         if loop.cron_service is None:
-            logger.warning("Idle watcher requested but AgentLoop has no cron_service — skipping")
-        else:
-            install_idle_system_job(
-                agent=loop,
-                sessions=loop.sessions,
-                cron=loop.cron_service,
-                config=idle_config,
+            # Operator opted in via YURI_IDLE_ENABLED; a single startup
+            # warning is too easy to miss when the user-visible symptom is
+            # "Yuri stopped greeting me." Fail loud so misconfig surfaces
+            # at boot rather than as a slow degradation.
+            raise RuntimeError(
+                "YURI_IDLE_ENABLED=1 but AgentLoop has no cron_service. "
+                "Either disable idle (YURI_IDLE_ENABLED=0) or ensure the "
+                "AgentLoop is constructed with a CronService."
             )
+        install_idle_system_job(
+            agent=loop,
+            sessions=loop.sessions,
+            cron=loop.cron_service,
+            config=idle_config,
+        )
 
     return hooks
 

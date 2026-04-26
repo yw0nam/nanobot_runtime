@@ -210,6 +210,18 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         # as the turn being complete and stop reading early. Only emit when
         # nanobot explicitly marks the message as the stream end.
         if not meta.get("_stream_end"):
+            # Defensive: log when the message lacks BOTH the _stream_end
+            # marker AND any tool-hint metadata. That shape would surface
+            # if nanobot upstream renamed _stream_end or stopped tagging
+            # the terminal OutboundMessage — without this log, the FE would
+            # silently hang waiting for stream_end forever.
+            if not (meta.get("_tool_hint") or meta.get("_tool_events")):
+                logger.warning(
+                    "desktop_mate: send() with neither _stream_end nor tool "
+                    "metadata (chat_id={}, content_len={}) — possible nanobot "
+                    "shape change; FE may hang. meta_keys={}",
+                    msg.chat_id, len(msg.content or ""), list(meta.keys()),
+                )
             return
 
         # We deliberately do NOT clear stream state here — TTS synthesis runs
@@ -242,6 +254,13 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         # FE consumers (and the live e2e harness) interpret each tool hop as
         # the turn being complete. Skip — only register / emit when actual
         # content arrives.
+        #
+        # Trade-off: a hypothetical "agent generates literally zero tokens
+        # and only emits the terminal marker on a brand-new stream" turn
+        # would also be silently dropped. That shape is not produced by
+        # nanobot today; if it ever is, the symptom is "FE never sees
+        # stream_end for that turn." Distinguishing it from a tool-call
+        # hop would require a new metadata flag from nanobot.
         if (
             not delta
             and meta.get("_stream_end")

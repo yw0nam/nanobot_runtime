@@ -132,10 +132,13 @@ async def test_c_long_response_yields_multiple_tts_chunks(gateway, live_client) 
         f"frames={[f.get('text', '')[:40] for f in tts_frames]}"
     )
     # Sequences must start at 0 and be strictly increasing within each
-    # contiguous stream segment. Nanobot may emit multiple streams per
-    # conversational turn (each tool-call hop opens a fresh SentenceChunker
-    # with its own sequence space), so a 0 mid-list signals a stream
-    # boundary and is allowed.
+    # contiguous segment. ``TTSHook._SessionState`` keys per session (so in
+    # principle one turn = one segment), but the current nanobot pin emits
+    # ``on_stream_end(resuming=False)`` on iteration boundaries, dropping
+    # the bucket and restarting sequence at 0. We accept multi-segment
+    # output to stay green across that quirk; if/when nanobot fixes the
+    # ``resuming`` semantics this still passes (single segment is just one
+    # contiguous run of monotonic ints from 0). See README invariant.
     seqs = [f["sequence"] for f in tts_frames]
     assert seqs[0] == 0, seqs
     expected = 0

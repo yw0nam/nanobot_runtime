@@ -88,12 +88,17 @@ nanobot_runtime/
   silently drop 한다 — 진짜 streaming 의 finalizer (existing stream_id 의
   empty `_stream_end`) 만 wire 에 나간다.
 
-- **`tts_chunk.sequence` 는 stream 단위로 리셋된다.** 한 turn 안에서
-  multi-iteration (tool call) 이 생기면 nanobot 은 새 stream_id 를 발급하고,
-  `SentenceChunker` 는 새 stream 마다 sequence 를 0 부터 다시 시작한다. FE /
-  테스트는 한 turn 에서 `[0, 1, 2, 0, 1]` 같은 시퀀스를 받을 수 있어야
-  하며, monotonic 검증은 `0` 가 새 stream 의 시작이라고 가정하고 segment
-  단위로 한다.
+- **`tts_chunk.sequence` 는 `TTSHook._SessionState` 가 살아있는 동안만
+  단조 증가한다.** Bucket 은 `session_key` (= `desktop_mate:<chat_id>`)
+  단위로 잡히고, 코드상으로는 `on_stream_end(resuming=False)` 에서만
+  drop 된다 — `resuming=True` (tool-call hop) 은 state 를 유지하므로 한
+  turn 동안 sequence 가 끊김 없이 증가하는 게 *원칙* 이다. **하지만
+  e2e 에서는 multi-iteration turn 의 wire 출력이 `[0, 1, 2, 0]` 처럼
+  segment 단위로 reset 되는 패턴이 관찰된다 — 현재 nanobot pin 이
+  agent iteration 경계에서 `resuming=False` 를 보내고 있다는 뜻**.
+  FE / 테스트는 이 두 가지 모두를 수용해야 하며, monotonic 검증은
+  segment 단위로 (`sequence == 0` 를 새 segment 의 시작으로 간주) 한다.
+  nanobot upstream 이 정정되면 도로 single-segment 가 될 수 있다.
 
 ## 개발 워크플로우
 
