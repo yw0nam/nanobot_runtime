@@ -76,6 +76,11 @@ curl http://127.0.0.1:7777/mcp/       # 405 응답도 alive 로 본다
 있어도 `synthesize()` 는 `None` 을 반환하므로 워크스페이스 자체는 기동
 되지만 음성이 끊긴다 — 로그에 실패 라인이 찍힌다.
 
+채널별로 TTS 디스패치 모드(`streaming` / `attachment` / `none`)를 선언
+해야 한다 — `<workspace>/resources/tts_channel_modes.yml` 파일에서 관리.
+파일이 없으면 `TTS_ENABLED=1` 일 때 launcher 가 fail-loud 한다. 새 채널
+추가 절차는 [`operations.md` §4.5](./operations.md#45-새-채널--tts-모드-추가).
+
 ---
 
 ## 4. Workspace 스켈레톤

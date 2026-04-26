@@ -186,6 +186,66 @@ nanobot 내장 `CronService` 로 충분 — 이 레포에 별도 코드 없다. 
 않는다면 `nanobot_runtime/tts/` 의존성 (`fast-bunkai` 등)도 가볍게
 쳐낼 수 있다. 다만 `pyproject.toml` 은 현재 tts 모듈을 포함한다.
 
+### 4.5 새 채널 / TTS 모드 추가
+
+새 메신저 채널(예: WhatsApp, Discord)을 추가하는 작업은 **runtime쪽 게이팅**
+과 **nanobot upstream 의 채널 구현** 두 단계로 나뉜다. 단계 별로 비용이
+크게 다르므로 분리해서 본다.
+
+#### (1) 채널이 nanobot 에 이미 있다면 — YAML 한 줄
+
+`<workspace>/resources/tts_channel_modes.yml` 에 추가하고 launcher 재시작:
+
+```yaml
+default: none
+channels:
+  desktop_mate: streaming
+  telegram: attachment
+  slack: none
+  discord: none         # 신규: 텍스트만 응답
+  whatsapp: attachment  # 신규: 음성노트 모드 선언 (실제 동작은 §3 참고)
+```
+
+YAML 의 channel key 는 nanobot 이 만드는 `session_key` 의 prefix 와 일치
+해야 한다 — `_channel_from_session_key` 가 첫 콜론 앞부분을 잘라쓰기
+때문 (`slack:C123:T456` → `"slack"`).
+
+빠뜨린 모드 typo 는 boot 시 `ValueError` 로 죽고, 미선언 채널은
+`default:` 로 폴백한다. ATTACHMENT 모드를 선언하면 boot 시 WARNING 이
+뜬다 (다음 항목 참고).
+
+#### (2) nanobot 에 채널이 없다면 — upstream 작업이 선행
+
+이 레포는 **runtime 쪽 게이팅**만 다룬다. 새 메신저 자체는 upstream
+(`<parent>/nanobot/nanobot/channels/`) 에서 구현해야 한다. 최소 요구사항:
+
+- `BaseChannel` 서브클래스 (`slack.py`, `telegram.py` 참고)
+- 인바운드 메시지 발행 시 `session_key=f"<channel>:<chat_id>:..."` 형태로
+  prefix 컨벤션 준수
+- `nanobot.json` 의 `channels` 섹션에 등록
+
+이 작업 없이 `tts_channel_modes.yml` 에만 등록하면 그 채널은 메시지를
+받지조차 못한다. 게이트는 **존재하지 않는 채널을 차단할 뿐** 만들어
+주지 않는다.
+
+#### (3) 모드별 실제 동작
+
+| 모드 | 현재 상태 | 추가 작업 |
+|---|---|---|
+| `none` | 즉시 동작. Slack / Discord 같은 텍스트-only 채널. | 없음 |
+| `streaming` | DesktopMate 한정 동작. `LazyChannelTTSSink` 가 desktop_mate 싱글톤에 결합 (spec §5.3). | DesktopMate 가 아닌 다른 streaming 타깃(Unity overlay 등)이 필요하면 새 sink 클래스 + launcher 분기 필요 |
+| `attachment` | **데이터 모델만 있고 파이프라인 미구현.** boot 시 WARNING + 실제는 silent NONE. | `AttachmentTTSHook` + 채널-side voice note uploader 필요 (별도 PR). |
+
+#### (4) WhatsApp 구체 시나리오
+
+- WhatsApp Business API 의 `audio` 메시지 타입을 쓸 거면 → `attachment`.
+  단, 파이프라인이 아직 없으니 등록만 하면 텍스트만 응답 + boot warning.
+  attachment 파이프라인 PR 이 별도로 필요.
+- 텍스트만 보낼 거면 → `none`. 즉시 동작.
+- WhatsApp Business API 자체가 nanobot 에 없으면 (2) 가 선행.
+
+설계 디테일은 `docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md`.
+
 ---
 
 ## 5. Troubleshooting
@@ -233,11 +293,17 @@ lsof -iTCP:<port> -sTCP:LISTEN
 
 ### TTS 청크가 안 온다
 
-- URL 파라미터 `?tts=0` 또는 inbound `tts_enabled:false` 가 걸려있는지 먼저.
+- 채널이 `tts_channel_modes.yml` 에서 `streaming` 으로 선언돼 있는지 먼저.
+  텍스트-only 채널(slack/discord/...) 은 mode 게이트가 dispatch 단계에서
+  short-circuit 한다 — synth 호출 자체가 안 일어나므로 로그에 아무것도
+  안 찍힌다. 신규 채널을 추가했는데 음성이 안 나오면 §4.5 참고.
+- URL 파라미터 `?tts=0` 또는 inbound `tts_enabled:false` 가 걸려있는지.
 - 게이트웨이 로그에 `IrodoriClient.synthesize: <preview>` 가 찍히면 호출은
   성공. 그 뒤 실패는 swallow 되므로 프레임은 나가되 `audio_base64=null`.
-- sink 가 `is_enabled()` False 를 돌려주면 synth task 자체가 생성되지
-  않는다 — URL/per-message 오버라이드 확인.
+- "DesktopMateChannel not registered yet" WARNING 이 한 번 떴다면 첫
+  메시지 디스패치 시점에 채널이 아직 등록되지 않은 것. 보통 두 번째
+  메시지부터 정상화되며 일회성. 매번 뜬다면 채널 기동 자체가 실패하는
+  것이므로 별도 진단 필요.
 
 ### Dream 이 skill 파일을 예기치 않게 덮어쓴다
 
