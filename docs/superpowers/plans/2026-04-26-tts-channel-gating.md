@@ -24,6 +24,7 @@
 | `tests/services/hooks/test_tts_hook.py` | MODIFY | Add `TestTTSHookSessionKeyPlumbing`. |
 | `src/nanobot_runtime/launcher.py` | MODIFY | Add `_resolve_tts_modes_path()`. In `_build_tts_hook()`: read modes YAML (FileNotFoundError if missing), inject `mode_map` into `LazyChannelTTSSink`. Rename TTS env vars (`YURI_TTS_*` → `TTS_*`). |
 | `tests/test_launcher.py` | MODIFY | Rename `YURI_TTS_RULES_PATH` → `TTS_RULES_PATH` in existing test. Extend `_clear_yuri_env` autouse fixture to also strip `TTS_*`. Add `TestResolveTtsModesPath` and `TestBuildTtsHookFailsWhenModesMissing`. |
+| `tests/regression/harness.py` | MODIFY | Update `DirectSink.is_enabled` signature to accept `session_key: str \| None = None` (body unchanged — channel readiness doesn't need it, but the new TTSHook call site passes the key positionally). |
 | `tests/e2e/conftest.py` | MODIFY | Line ~139: `YURI_TTS_URL` → `TTS_URL`. |
 | `tests/e2e/README.md` | MODIFY | Line ~20: doc reference `YURI_TTS_URL` → `TTS_URL`. |
 | `docs/setup.md` | MODIFY | Lines 34, 35, 175, 176: `YURI_TTS_ENABLED` / `YURI_TTS_URL` → `TTS_ENABLED` / `TTS_URL`. |
@@ -286,10 +287,35 @@ class TestLoadChannelModes:
         assert str(p) in msg
 
     def test_yaml_parse_error_propagates(self, tmp_path: Path):
+        # Truly invalid YAML — unclosed flow sequence raises
+        # yaml.scanner.ScannerError (a subclass of yaml.YAMLError).
         p = tmp_path / "modes.yml"
-        p.write_text("default: none\nchannels:\n  - this is not a mapping\n")
+        p.write_text('default: "unterminated\n')
         with pytest.raises(yaml.YAMLError):
             load_channel_modes(p)
+
+    def test_channels_not_a_mapping_raises_value_error(self, tmp_path: Path):
+        # `channels:` is a list, not a mapping. Loader must catch this
+        # before iterating (.items() on a list would AttributeError).
+        p = tmp_path / "modes.yml"
+        p.write_text("channels:\n  - desktop_mate\n  - slack\n")
+        with pytest.raises(ValueError) as ei:
+            load_channel_modes(p)
+        msg = str(ei.value)
+        assert "channels" in msg
+        assert "must be a mapping" in msg
+        assert "list" in msg
+        assert str(p) in msg
+
+    def test_top_level_not_a_mapping_raises_value_error(self, tmp_path: Path):
+        p = tmp_path / "modes.yml"
+        p.write_text("[1, 2, 3]\n")
+        with pytest.raises(ValueError) as ei:
+            load_channel_modes(p)
+        msg = str(ei.value)
+        assert "Top-level YAML must be a mapping" in msg
+        assert "list" in msg
+        assert str(p) in msg
 
     def test_file_not_found_raises(self, tmp_path: Path):
         p = tmp_path / "missing.yml"
@@ -317,15 +343,23 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
     - Missing ``default:`` or ``channels:`` keys → field defaults apply.
     - Invalid mode strings → ``ValueError`` naming the field, value, and
       file path so an operator typo is immediately actionable.
+    - Top-level not a mapping (e.g. ``[1, 2, 3]``) → ``ValueError``.
+    - ``channels:`` not a mapping (e.g. a list) → ``ValueError``. Caught
+      explicitly so the operator gets a clear message instead of an
+      AttributeError on ``.items()``.
 
-    The loader's only job is YAML I/O and converting raw mode strings to
-    ``TTSMode`` enum values. It never substitutes defaults itself —
-    Pydantic field defaults handle absence.
+    The loader's only job is YAML I/O, type-shape validation, and
+    converting raw mode strings to ``TTSMode`` enum values. It never
+    substitutes defaults itself — Pydantic field defaults handle absence.
     """
     p = Path(path)
     raw = yaml.safe_load(p.read_text())
     if raw is None:
         return ChannelModeMap()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Top-level YAML must be a mapping in {p}, got {type(raw).__name__}"
+        )
 
     kwargs: dict[str, object] = {}
 
@@ -337,9 +371,14 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
                 f"Invalid TTS mode {raw['default']!r} for 'default' in {p}"
             ) from e
 
-    if "channels" in raw and raw["channels"]:
+    if "channels" in raw and raw["channels"] is not None:
+        chans_raw = raw["channels"]
+        if not isinstance(chans_raw, dict):
+            raise ValueError(
+                f"'channels' must be a mapping in {p}, got {type(chans_raw).__name__}"
+            )
         channels: dict[str, TTSMode] = {}
-        for name, mode_str in raw["channels"].items():
+        for name, mode_str in chans_raw.items():
             try:
                 channels[name] = TTSMode(mode_str)
             except ValueError as e:
@@ -354,7 +393,7 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
 ### Step 1.12: Run all `test_modes.py` to verify pass
 
 - [ ] Run: `pytest tests/services/tts/test_modes.py -v`
-- [ ] Expected: 17 PASS, 0 FAIL.
+- [ ] Expected: 19 PASS, 0 FAIL. (5 TTSMode + 4 ChannelModeMapLookup + 10 LoadChannelModes.)
 
 ### Step 1.13: Commit
 
@@ -667,108 +706,127 @@ EOF
 
 ## Task 4: `TTSHook` session_key threading
 
-Three call-site updates in `tts.py`. Hook constructor unchanged. Mock sinks in existing hook tests must accept the new `session_key` kwarg.
+Three call-site updates in `tts.py` plus a small signature update to the regression harness's `DirectSink`. Hook constructor unchanged.
 
 **Files:**
 
 - Modify: `src/nanobot_runtime/services/hooks/tts.py`
-- Modify: `tests/services/hooks/test_tts_hook.py`
+- Modify: `tests/services/hooks/test_tts_hook.py` (add `_GatedFakeSink` + new test functions; existing fakes/`_make_hook`/`_ctx` style preserved)
+- Modify: `tests/regression/harness.py` (`DirectSink.is_enabled` signature)
 
-### Step 4.1: Inspect existing test conventions
+### Step 4.1: Add `_GatedFakeSink` helper + failing tests
 
-- [ ] Run: `head -80 tests/services/hooks/test_tts_hook.py` to learn the existing fixture style (sink mocks, hook construction). The new tests will follow that style.
+The existing file uses module-level fake classes (`_FakeChunker`, `_FakePreprocessor`, `_FakeSink`, `_FakeSynthesizer`), a `_make_hook(...)` factory returning `(hook, sink, synth)`, a `_ctx(iteration=0, session_key="test-session")` helper, and plain `async def test_*` functions (no test classes). Match that style.
 
-### Step 4.2: Write failing test for session_key threading
+- [ ] Open `tests/services/hooks/test_tts_hook.py`. Add a new fake class right after the existing `_FakeSink` definition:
 
-- [ ] Append to `tests/services/hooks/test_tts_hook.py`. (Follow the existing import + fixture pattern; the snippet below assumes an existing test file already imports `TTSHook`, `TTSChunk`, and has fixture(s) for the preprocessor / chunker / synthesizer / emotion_mapper. If those fixtures don't exist, mirror the closest existing test class — do NOT invent new fixtures from scratch.)
+```python
+class _GatedFakeSink:
+    """Like _FakeSink but exposes a configurable is_enabled gate that
+    records every call's session_key. Used to verify the hook threads
+    AgentHookContext.session_key into both the first-pass dispatch check
+    and the second-chance check inside _synth_and_emit.
+    """
+
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.chunks: list[TTSChunk] = []
+        self.is_enabled_calls: list[str | None] = []
+        self._enabled = enabled
+
+    def is_enabled(self, session_key: str | None = None) -> bool:
+        self.is_enabled_calls.append(session_key)
+        return self._enabled
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        self.chunks.append(chunk)
+```
+
+- [ ] At the bottom of the file (after the existing tests), add three new test functions matching the existing `async def test_*` style:
 
 ```python
 # ── session_key plumbing into sink.is_enabled ─────────────────────────
 
 
-class TestTTSHookSessionKeyPlumbing:
-    """Verifies the hook threads AgentHookContext.session_key into every
-    sink.is_enabled() call, including the second-chance check inside
-    _synth_and_emit. Without this, mode-gating sinks (LazyChannelTTSSink
-    after this PR) cannot tell which channel they're being asked about.
+async def test_dispatch_sentence_passes_session_key_to_is_enabled() -> None:
+    """Hook must thread AgentHookContext.session_key into sink.is_enabled
+    so mode-gating sinks (LazyChannelTTSSink) can decide per channel.
+    Both the first-pass check in _dispatch_sentence and the second-chance
+    check inside _synth_and_emit must receive the same key.
     """
+    sink = _GatedFakeSink(enabled=True)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="slack:C123:T456")
 
-    @pytest.mark.asyncio
-    async def test_dispatch_sentence_passes_session_key_to_is_enabled(
-        self, tts_hook_factory  # existing fixture; adapt name to whatever the file uses
-    ):
-        sink = MagicMock()
-        sink.is_enabled = MagicMock(return_value=False)  # gate closed → no synthesis
-        sink.send_tts_chunk = AsyncMock()
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
 
-        hook = tts_hook_factory(sink=sink)
-        ctx = MagicMock()
-        ctx.session_key = "slack:C123:T456"
+    # First-pass + second-chance: both must use the same session_key.
+    assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
 
-        await hook.on_stream(ctx, "Hello world. ")
-        # Trigger a sentence dispatch by feeding a sentence terminator.
-        # (Adapt this if the existing fixture's chunker needs a different prompt.)
 
-        # The hook must have asked the sink "is_enabled" with the session_key,
-        # not with no args.
-        sink.is_enabled.assert_called_with("slack:C123:T456")
+async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump() -> None:
+    """When the sink reports disabled at dispatch time, the hook must
+    skip synthesis entirely: no synth call, no emitted chunk, and the
+    per-session sequence counter must not advance (so the next enabled
+    sentence still gets sequence 0).
+    """
+    sink = _GatedFakeSink(enabled=False)
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx(session_key="slack:C123:T456")
 
-    @pytest.mark.asyncio
-    async def test_disabled_sink_skips_dispatch_no_task_no_sequence_bump(
-        self, tts_hook_factory
-    ):
-        sink = MagicMock()
-        sink.is_enabled = MagicMock(return_value=False)
-        sink.send_tts_chunk = AsyncMock()
-        synthesizer = AsyncMock()  # must NOT be called
+    await hook.on_stream(ctx, "Hello there. Second sentence.")
+    await hook.on_stream_end(ctx, resuming=False)
 
-        hook = tts_hook_factory(sink=sink, synthesizer=synthesizer)
-        ctx = MagicMock()
-        ctx.session_key = "slack:C123:T456"
+    assert synth.calls == []
+    assert sink.chunks == []
+    # Two sentences attempted; one is_enabled call per dispatch attempt.
+    # No second-chance call ever fires because no task was created.
+    assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
 
-        await hook.on_stream(ctx, "Hello. ")
-        await hook.on_stream_end(ctx, resuming=False)
 
-        synthesizer.synthesize.assert_not_called()
-        sink.send_tts_chunk.assert_not_called()
-        # Internal state: sequence should NOT have been bumped (existing
-        # docstring guarantee at tts.py lines 26-31).
-        # If the hook exposes per-session sequence via __getstate__ or a
-        # debug accessor, assert here. Otherwise this is implicit.
+async def test_sink_without_is_enabled_method_is_treated_as_always_enabled() -> None:
+    """Backward compat: bare sinks (existing _FakeSink with no is_enabled
+    method) must still receive chunks. Many existing tests in this file
+    rely on this; the new gating must not break them.
+    """
+    sink = _FakeSink()  # existing fake — has no is_enabled method
+    synth = _FakeSynthesizer()
+    hook = TTSHook(
+        chunker_factory=_FakeChunker,
+        preprocessor=_FakePreprocessor(),
+        emotion_mapper=_FakeEmotionMapper(),
+        synthesizer=synth,
+        sink=sink,
+    )
+    ctx = _ctx()
 
-    @pytest.mark.asyncio
-    async def test_sink_without_is_enabled_method_is_treated_as_always_enabled(
-        self, tts_hook_factory
-    ):
-        # Backward compat: sinks may omit is_enabled entirely. Hook treats
-        # absence as "always on". (Tests for LazyChannelTTSSink in Task 3
-        # cover the always-present case; this covers the absent case.)
-        class BareSink:
-            async def send_tts_chunk(self, chunk):
-                self.received = chunk
+    await hook.on_stream(ctx, "Hello there.")
+    await hook.on_stream_end(ctx, resuming=False)
 
-        sink = BareSink()
-        synthesizer = AsyncMock()
-        synthesizer.synthesize.return_value = "BASE64WAV"
-
-        hook = tts_hook_factory(sink=sink, synthesizer=synthesizer)
-        ctx = MagicMock()
-        ctx.session_key = "desktop_mate:chat42"
-
-        await hook.on_stream(ctx, "Hello. ")
-        await hook.on_stream_end(ctx, resuming=False)
-
-        synthesizer.synthesize.assert_called()  # exact arg check is brittle here
+    assert synth.calls == ["Hello there."]
+    assert len(sink.chunks) == 1
 ```
 
-> If the existing test file uses a different mocking style (e.g. plain stub classes instead of `MagicMock`), follow that style. The behavioural assertions above are the load-bearing part.
+### Step 4.2: Run to verify failure
 
-### Step 4.3: Run to verify failure
+- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py::test_dispatch_sentence_passes_session_key_to_is_enabled -v`
+- [ ] Expected: AssertionError. Current code calls `fn()` (no args) inside `_sink_is_enabled`, so `is_enabled_calls` would be `[None, None]`, not the session key.
 
-- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py::TestTTSHookSessionKeyPlumbing -v`
-- [ ] Expected: at least the first test fails with `assert_called_with("slack:C123:T456")` mismatch (current code calls `is_enabled()` with no args).
-
-### Step 4.4: Implement the threading
+### Step 4.3: Implement the threading
 
 - [ ] In `src/nanobot_runtime/services/hooks/tts.py`, update the `TTSSink` Protocol comment-spec (line ~99–100):
 
@@ -857,26 +915,60 @@ async def _synth_and_emit(
         logger.exception("TTS sink emission failed (seq={})", sequence)
 ```
 
-### Step 4.5: Run to verify pass
+### Step 4.4: Run new tests to verify pass
 
-- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py::TestTTSHookSessionKeyPlumbing -v`
-- [ ] Expected: all PASS.
+- [ ] Run: `pytest tests/services/hooks/test_tts_hook.py -k "session_key or sink_without_is_enabled or disabled_sink" -v`
+- [ ] Expected: 3 PASS — `test_dispatch_sentence_passes_session_key_to_is_enabled`, `test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump`, `test_sink_without_is_enabled_method_is_treated_as_always_enabled`.
 
-### Step 4.6: Run full hook tests for regressions
+### Step 4.5: Run full hook tests for regressions
 
 - [ ] Run: `pytest tests/services/hooks/test_tts_hook.py -v`
-- [ ] Expected: all green. If existing tests use a sink mock with `is_enabled()` (no args), they may break — update those mocks to either omit `is_enabled` (testing always-enabled path) or accept `session_key=None`.
+- [ ] Expected: all green. The pre-existing tests use the bare `_FakeSink` (no `is_enabled` method) and so exercise the backward-compat path automatically. Nothing else in this file should regress.
 
-### Step 4.7: Commit
+### Step 4.6: Update `DirectSink` in the regression harness
+
+The regression harness in `tests/regression/harness.py` defines its own sink and instantiates `TTSHook` directly, so it has a `is_enabled` call site outside `tests/services/hooks/`. The new TTSHook passes `session_key` positionally; without this update, regression tests (which run as part of Step 8.2 `pytest tests/ --ignore=tests/e2e`) raise `TypeError: is_enabled() takes 1 positional argument but 2 were given`.
+
+- [ ] Open `tests/regression/harness.py`. Find the `DirectSink` class (around line 88) and update only the `is_enabled` signature — body unchanged:
+
+```python
+class DirectSink:
+    """Sink that forwards to a specific channel (not via module registry).
+
+    Regression tests instantiate one channel per scenario and want to
+    avoid cross-test state leakage from the module-level _LATEST_CHANNEL.
+    The channel is also an ``is_enabled``-aware TTSSink so TTSHook's skip
+    path is exercised.
+    """
+
+    def __init__(self, channel: DesktopMateChannel):
+        self._channel = channel
+
+    def is_enabled(self, session_key: str | None = None) -> bool:
+        # Channel readiness doesn't depend on the key; the key is part of
+        # the new TTSHook → TTSSink protocol but the channel only needs
+        # to know whether its own current stream is enabled.
+        return self._channel.is_tts_enabled_for_current_stream()
+
+    async def send_tts_chunk(self, chunk: TTSChunk) -> None:
+        await self._channel.send_tts_chunk(chunk)
+```
+
+### Step 4.7: Run regression harness tests
+
+- [ ] Run: `pytest tests/regression/ -v`
+- [ ] Expected: all green. (No assertion changes in regression tests — only the sink signature, which they don't directly assert on.)
+
+### Step 4.8: Commit
 
 - [ ] Run:
 
 ```bash
-git add src/nanobot_runtime/services/hooks/tts.py tests/services/hooks/test_tts_hook.py
+git add src/nanobot_runtime/services/hooks/tts.py tests/services/hooks/test_tts_hook.py tests/regression/harness.py
 git commit -m "$(cat <<'EOF'
 feat(tts): TTSHook threads session_key into sink.is_enabled
 
-Three call-site updates: _sink_is_enabled accepts session_key,
+Three call-site updates in tts.py: _sink_is_enabled accepts session_key,
 _dispatch_sentence passes state.session_key, _synth_and_emit gains a
 session_key kwarg for the second-chance check. Hook constructor and
 existing per-session state lifecycle are unchanged.
@@ -885,7 +977,11 @@ Backward compat preserved: sinks that omit is_enabled entirely are still
 treated as always-enabled. Sinks that implement is_enabled with the new
 session_key kwarg (default None) work without further changes.
 
-Refs: docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md §5.2
+regression/harness.py DirectSink updated to match the new signature so
+the regression suite keeps passing — it was the only is_enabled call
+site outside the hook tests.
+
+Refs: docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md §5.2, §9
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -971,29 +1067,35 @@ class TestBuildTtsHookFailsWhenModesMissing:
     ):
         # When TTS_ENABLED=0, _hooks_factory must skip _build_tts_hook
         # entirely — no rules check, no modes check.
+        #
+        # We isolate the TTS branch by stubbing the only other branches
+        # _hooks_factory exercises (LTM hook construction and the idle
+        # cron install) so a failure in this test can ONLY mean the TTS
+        # branch was incorrectly entered. No bare-except — every failure
+        # mode is named.
+        monkeypatch.setattr(
+            "nanobot_runtime.launcher.build_ltm_hooks",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "nanobot_runtime.launcher.install_idle_system_job",
+            lambda **k: None,  # never actually installed (we set IDLE off)
+        )
         monkeypatch.setenv("TTS_ENABLED", "0")
-        monkeypatch.chdir(tmp_path)  # no resources/ dir at all
-        # Build the hooks_factory and call it with a stub loop. The factory
-        # should not raise FileNotFoundError because the TTS branch is
-        # skipped. Stub the rest minimally to isolate the TTS check.
-        from nanobot_runtime.launcher import _hooks_factory
-        from unittest.mock import MagicMock
-        loop = MagicMock()
-        loop.cron_service = None  # also skip the idle branch via env
         monkeypatch.setenv("YURI_IDLE_ENABLED", "0")
-        monkeypatch.setenv("YURI_LTM_URL", "")  # ensure LTM stub safe; adjust if needed
-        # If _hooks_factory raises for unrelated reasons (LTM build), this
-        # test should be skipped or refactored to mock build_ltm_hooks. The
-        # critical assertion is that no FileNotFoundError is raised.
-        try:
-            _hooks_factory(loop)
-        except FileNotFoundError:
-            pytest.fail("TTS modes file was checked even though TTS_ENABLED=0")
-        except Exception:
-            pass  # other failures (LTM, etc.) are not what this test is about
-```
+        monkeypatch.chdir(tmp_path)  # no resources/ dir at all
 
-> The `test_does_not_check_modes_when_tts_disabled` test stubs the rest of `_hooks_factory` minimally. If the factory raises for unrelated reasons (LTM build, etc.) during this test, mock `build_ltm_hooks` with `monkeypatch.setattr("nanobot_runtime.launcher.build_ltm_hooks", lambda *a, **k: [])` to keep the test focused on the TTS branch.
+        from unittest.mock import MagicMock
+        from nanobot_runtime.launcher import _hooks_factory
+        loop = MagicMock()
+        loop.cron_service = None  # not consulted because IDLE is off
+
+        hooks = _hooks_factory(loop)
+
+        # LTM stubbed → []. TTS off → no append. Idle off → no install.
+        # Result must be exactly the LTM stub's output: empty list.
+        assert hooks == []
+```
 
 ### Step 5.2: Run to verify failure
 
@@ -1384,12 +1486,12 @@ Performed inline against `docs/superpowers/specs/2026-04-26-tts-channel-gating-d
 | §8 Configuration | Tasks 5, 7 | All env vars renamed; YAML schema in §5.5 covered by Task 7 |
 | §9 Migration — `.env` | Task 7 Step 7.1 | |
 | §9 Migration — new YAML | Task 7 Step 7.2 | |
-| §9 Migration — repo file updates | Task 6 | All four files in the table covered |
+| §9 Migration — repo file updates | Task 6 (4 renames) + Task 4 Step 4.6 (`harness.py` signature) | All five files in the table covered. Harness lands in Task 4 with the hook change so the regression suite never observes a signature mismatch. |
 | §10 Testing plan | Tasks 1–5 (each task includes its TDD tests) | |
 | §11 Verification criteria | Task 8 (all 9 items mapped to Steps 8.1–8.7) | Steps 8.8/8.9 add push + PR |
 | §12 Out of scope | Honoured: no AttachmentTTSHook, no LTM/IDLE rename, no multi-sink routing, no hot reload | |
 
-**Placeholder scan:** No "TBD"/"TODO"/"implement later". Step 5.1 carries one inline note about adapting test setup to existing fixture conventions (`tts_hook_factory` is a placeholder fixture name) — flagged explicitly so the implementer reads `test_tts_hook.py` first and renames as needed. This is unavoidable without reading that test file in advance; the alternative would be a brittle fixture spec that may not match.
+**Placeholder scan:** No "TBD"/"TODO"/"implement later". Task 4 was rewritten in v2 to use the test file's actual style (`_FakeChunker`/`_FakePreprocessor`/`_FakeSink`/`_FakeSynthesizer`/`_ctx` module-level fakes, plain `async def test_*` functions) plus a new `_GatedFakeSink` helper — no fictional `tts_hook_factory` fixture or `MagicMock`/`AsyncMock` style.
 
 **Type / signature consistency:** `ChannelModeMap.lookup(channel_name: str | None) -> TTSMode` — used identically in Task 1 (impl + tests), Task 3 (sink), Task 4 (test isolation). `_channel_from_session_key(session_key: str | None) -> str | None` — same signature in Task 2 helper, Task 3 sink consumer, Task 5 (no consumer; only used via sink). `is_enabled(session_key: str | None = None) -> bool` — same signature in Task 3 sink, Task 4 hook caller, Task 4 test mocks.
 

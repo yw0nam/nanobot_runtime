@@ -308,6 +308,8 @@ gate independently and never both fire on the same sentence.
 | YAML parse error | `yaml.YAMLError` propagates; boot aborts. |
 | `default: streamign` (typo) | `ValueError("Invalid TTS mode 'streamign' for 'default' in <path>")`. |
 | `channels: {telegram: brodcast}` | `ValueError` naming both the channel and the bad value. |
+| `channels:` is a list / scalar (not a mapping) | `ValueError("'channels' must be a mapping in <path>, got list")`. Loader checks `isinstance(raw["channels"], dict)` before iterating to avoid an unhelpful AttributeError on `.items()`. |
+| Top-level YAML is not a mapping (e.g. file is `[1, 2, 3]`) | `ValueError("Top-level YAML must be a mapping in <path>, got list")`. |
 | `default:` key missing | Implicit `NONE` (per design). |
 | `channels:` key missing | Empty dict; all channels resolve to `default`. |
 | Unknown top-level keys | Silently ignored (yaml.safe_load returns dict; we read only the keys we know). |
@@ -383,6 +385,7 @@ These references break silently after the rename if not updated together:
 | `tests/e2e/README.md` | 20 | `YURI_TTS_URL` reference → `TTS_URL` |
 | `docs/setup.md` | 34, 35, 175, 176 | All `YURI_TTS_ENABLED` / `YURI_TTS_URL` → `TTS_ENABLED` / `TTS_URL` |
 | `tests/test_launcher.py` | 86 | `monkeypatch.setenv("YURI_TTS_RULES_PATH", ...)` → `"TTS_RULES_PATH"` |
+| `tests/regression/harness.py` | ~100 | `DirectSink.is_enabled(self) -> bool` → `is_enabled(self, session_key: str \| None = None) -> bool`. Body unchanged — the channel's readiness check doesn't need the key, but the new TTSHook signature passes it positionally and would raise TypeError otherwise. |
 
 `docs/operations.md`, `tests/e2e/README.md` (other lines), and the
 top-level `README.md` reference only `YURI_IDLE_*` / `YURI_WORKSPACE`,
@@ -401,6 +404,8 @@ TestLoadChannelModes
   test_unknown_default_mode_raises_value_error_with_path
   test_unknown_channel_mode_raises_value_error_with_channel_name
   test_yaml_parse_error_propagates
+  test_channels_not_a_mapping_raises_value_error
+  test_top_level_not_a_mapping_raises_value_error
   test_file_not_found_raises
 
 TestChannelModeMapLookup
