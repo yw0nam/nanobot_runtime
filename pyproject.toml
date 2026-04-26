@@ -30,6 +30,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/nanobot_runtime"]
 
+# Workspace launcher console script. Workspaces install nanobot-runtime as
+# an editable dep and invoke ``nanobot-launcher`` (or ``python -m
+# nanobot_runtime.launcher``) instead of carrying their own entrypoint file.
+[project.scripts]
+nanobot-launcher = "nanobot_runtime.launcher:main"
+
 # Nanobot's ChannelManager discovers external channel plugins through the
 # ``nanobot.channels`` entry_point group. The section key in nanobot.json
 # (``channels.desktop_mate``) must match the entry_point name below.

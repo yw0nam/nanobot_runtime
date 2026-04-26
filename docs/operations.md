@@ -89,7 +89,7 @@ YURI_IDLE_TIMEOUT_S=10 \
 YURI_IDLE_SCAN_INTERVAL_S=3 \
 YURI_IDLE_COOLDOWN_S=60 \
 YURI_IDLE_QUIET_START= YURI_IDLE_QUIET_END= \
-.venv/bin/python run_gateway.py
+.venv/bin/nanobot-launcher
 ```
 
 WS 클라이언트로 메시지 1개 보내고 15초 대기 — 자발 `stream_start →
@@ -102,7 +102,7 @@ delta → stream_end` 가 들어오면 OK. (`YURI_...` 대신 워크스페이스
 
 | 무엇 | 어디 |
 |---|---|
-| Gateway stdout/stderr (프로덕션) | `run_gateway.py` 띄운 터미널 |
+| Gateway stdout/stderr (프로덕션) | `nanobot-launcher` 띄운 터미널 |
 | E2E 서브프로세스 로그 | `/tmp/yuri_e2e_gateway.log` |
 | 대화 세션 히스토리 | `<workspace>/sessions/<safe_key>.jsonl` (첫 줄 metadata, 이후 message 단위) |
 | LTM persistent | Qdrant 볼륨 (`ltm_qdrant` docker volume) + Neo4j 컨테이너 내부 |

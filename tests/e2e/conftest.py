@@ -135,7 +135,7 @@ def backends_up(workspace: Path) -> None:
     if api_base:
         checks.append(("vLLM", _http_reachable(api_base.rstrip("/") + "/models")))
 
-    # Irodori — default from run_gateway.py
+    # Irodori — default from nanobot_runtime.launcher
     tts_url = os.getenv("YURI_TTS_URL", "http://192.168.0.41:8091")
     checks.append(("Irodori TTS", _http_reachable(tts_url.rstrip("/") + "/")))
 
@@ -173,7 +173,7 @@ def gateway(
     env.pop("VIRTUAL_ENV", None)
 
     proc = subprocess.Popen(
-        [str(workspace_python), "run_gateway.py"],
+        [str(workspace_python), "-m", "nanobot_runtime.launcher"],
         cwd=str(workspace),
         stdout=open(log_path, "w"),
         stderr=subprocess.STDOUT,

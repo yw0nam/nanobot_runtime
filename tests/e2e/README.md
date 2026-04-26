@@ -11,8 +11,9 @@ streaming timing, Irodori synthesis latency, and LTM MCP roundtrips.
 1. A configured workspace (a sibling `yuri/` directory by default, or set
    `YURI_WORKSPACE=<path>`) containing:
    - `nanobot.json` with `channels.desktop_mate.enabled=true`
-   - `.venv/` with `uv sync` already run
-   - `run_gateway.py` as the entrypoint
+   - `.venv/` with `uv sync` already run (installs `nanobot-runtime`
+     editable, which provides the `nanobot_runtime.launcher` entry the
+     fixture spawns via ``python -m``)
 2. Three backends reachable:
    - vLLM (per `nanobot.json` `providers.vllm.apiBase`)
    - Irodori TTS (defaults to `http://192.168.0.41:8091`; override with
@@ -83,7 +84,7 @@ YURI_IDLE_SCAN_INTERVAL_S=3 \
 YURI_IDLE_COOLDOWN_S=60 \
 YURI_IDLE_QUIET_START= \
 YURI_IDLE_QUIET_END= \
-.venv/bin/python run_gateway.py
+.venv/bin/nanobot-launcher
 ```
 
 Then in a second shell, connect a WS client, send one message, leave
