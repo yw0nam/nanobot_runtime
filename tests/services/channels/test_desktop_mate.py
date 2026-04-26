@@ -14,6 +14,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot_runtime.services.channels.desktop_mate import (
     DesktopMateChannel,
     DesktopMateConfig,
+    _channel_from_session_key,
 )
 from nanobot_runtime.services.hooks.tts import TTSChunk
 
@@ -858,3 +859,26 @@ async def test_start_passes_ping_and_max_size_to_serve(monkeypatch):
     assert kwargs.get("ping_interval") == 20.0
     assert kwargs.get("ping_timeout") == 20.0
     assert kwargs.get("max_size") == 60 * 1024 * 1024
+
+
+# ── _channel_from_session_key ─────────────────────────────────────────
+
+
+class Test_ChannelFromSessionKey:
+    """Helper that extracts the channel-name prefix from nanobot's
+    '<channel>:<chat_id>[:...]' session_key convention."""
+
+    def test_extracts_prefix_from_slack_thread_form(self):
+        assert _channel_from_session_key("slack:C123:T456") == "slack"
+
+    def test_extracts_prefix_from_simple_form(self):
+        assert _channel_from_session_key("desktop_mate:abc") == "desktop_mate"
+
+    def test_returns_none_for_none_input(self):
+        assert _channel_from_session_key(None) is None
+
+    def test_returns_none_for_empty_string(self):
+        assert _channel_from_session_key("") is None
+
+    def test_returns_none_for_no_colon_input(self):
+        assert _channel_from_session_key("weird") is None

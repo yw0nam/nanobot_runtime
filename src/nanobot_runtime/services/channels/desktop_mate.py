@@ -321,6 +321,24 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
 # ── Lazy TTS Sink ──────────────────────────────────────────────────────────
 
 
+def _channel_from_session_key(session_key: str | None) -> str | None:
+    """Extract the channel-name prefix from nanobot's '<channel>:<chat_id>[:...]' form.
+
+    nanobot constructs session keys like ``"slack:C123:T456"`` (slack.py:345),
+    ``"telegram:42:topic:7"`` (telegram.py:792), and ``"desktop_mate:<chat_id>"``.
+    The prefix up to the first colon is the channel name; everything after is
+    chat- or thread-scoped opaque data.
+
+    Returns ``None`` for ``None`` input, an empty string, or a string with no
+    colon — these all resolve to the channel-mode map's ``default`` mode at
+    the call site.
+    """
+    if not session_key:
+        return None
+    prefix, sep, _ = session_key.partition(":")
+    return prefix if sep else None
+
+
 class LazyChannelTTSSink:
     """TTSSink that resolves the active DesktopMateChannel at send time.
 
