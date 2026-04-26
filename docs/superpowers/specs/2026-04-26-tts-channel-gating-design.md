@@ -166,6 +166,28 @@ class LazyChannelTTSSink:
     # get_reference_id_for_session: unchanged
 ```
 
+#### Operational note: scope of `streaming` mode in this PR
+
+The `streaming` enum value is forward-compatible — multiple sinks could
+handle it in parallel (DesktopMate now, Unity later, a Telegram streaming
+sink, etc.). In this PR the only sink is `LazyChannelTTSSink`, which
+delivers exclusively to the DesktopMate WebSocket. The sink's `is_enabled`
+performs *two* checks in series:
+
+1. **Mode gate** (added by this PR): `mode_map.lookup(channel) == STREAMING`.
+2. **Channel readiness** (pre-existing): `is_tts_enabled_for_current_stream()` —
+   True only when a DesktopMate stream is currently active for this turn.
+
+Consequence: a channel other than `desktop_mate` mapped to `streaming` will
+pass the mode gate, but the readiness check returns False unless a
+DesktopMate stream happens to be concurrently active — in which case audio
+would be delivered to the *DesktopMate* stream, not to the channel that
+originated the turn (the sink has no cross-channel routing).
+
+**For this PR `streaming` is therefore only operationally meaningful for
+`desktop_mate`.** Multi-sink routing belongs to the future Unity work, not
+the gating PR — see §12.
+
 ### 5.4 `launcher.py` (modified)
 
 ```python
@@ -351,6 +373,21 @@ YURI_TTS_RULES_PATH     → TTS_RULES_PATH
 
 Create `yuri/resources/tts_channel_modes.yml` with the contents shown in §5.5.
 
+### Repo file updates (must ship in this PR)
+
+These references break silently after the rename if not updated together:
+
+| File | Line(s) | Change |
+|---|---|---|
+| `tests/e2e/conftest.py` | 139 | `os.getenv("YURI_TTS_URL", ...)` → `os.getenv("TTS_URL", ...)` |
+| `tests/e2e/README.md` | 20 | `YURI_TTS_URL` reference → `TTS_URL` |
+| `docs/setup.md` | 34, 35, 175, 176 | All `YURI_TTS_ENABLED` / `YURI_TTS_URL` → `TTS_ENABLED` / `TTS_URL` |
+| `tests/test_launcher.py` | 86 | `monkeypatch.setenv("YURI_TTS_RULES_PATH", ...)` → `"TTS_RULES_PATH"` |
+
+`docs/operations.md`, `tests/e2e/README.md` (other lines), and the
+top-level `README.md` reference only `YURI_IDLE_*` / `YURI_WORKSPACE`,
+which are out of scope for this PR.
+
 ## 10. Testing plan
 
 ### `tests/services/tts/test_modes.py` (new)
@@ -434,11 +471,16 @@ A definition-of-done checklist for the implementation PR. Each item is independe
 5. `bash scripts/e2e.sh` — all green (per CODING_RULES §10).
 6. Boot with `TTS_ENABLED=1` and modes file deleted → process exits with the FileNotFoundError message text shown in §5.4.
 7. Boot with `TTS_ENABLED=0` and modes file deleted → process boots normally.
-8. Manual: edit `yuri/resources/tts_channel_modes.yml` to set `slack: streaming`, restart, send a Slack message — observe synth task created (logged INFO at boot, audible if DesktopMate connected). Revert. (Sanity check that the gate is the only thing in the way.)
-9. `grep -r 'YURI_TTS_' src/ tests/ scripts/` returns zero hits.
+8. Manual gate isolation (uses DesktopMate, the only channel where `streaming` is operationally meaningful per §5.3):
+   - (a) Default config — connect DesktopMate FE, send a message → observe TTS frames in the WS log (existing baseline, unchanged).
+   - (b) Edit `yuri/resources/tts_channel_modes.yml` to `desktop_mate: none`, restart, repeat — observe NO TTS frames. Only the mode gate has changed; this isolates the gate from the readiness check.
+   - (c) Revert.
+   - **Do not** test by setting `slack: streaming` — `LazyChannelTTSSink` has no cross-channel routing in this PR (§5.3), so a Slack turn either fails the readiness check or, worse, delivers Slack-originated audio to a concurrently-active DesktopMate stream.
+9. `git ls-files | xargs grep -l 'YURI_TTS_' | grep -v 'docs/superpowers/specs/2026-04-26-tts-channel-gating-design.md'` returns no files. (This spec is the only allowed reference, in §5.4 and §9 documenting the rename.)
 
 ## 12. Out of scope / future work
 
+- **Multi-sink routing for `streaming` mode**. Today there is one streaming sink (`LazyChannelTTSSink → DesktopMate`). When Unity (or a Telegram streaming sink, etc.) lands, the runtime needs to dispatch a sentence to the sink whose channel matches the originating session — not always to DesktopMate. Until then `streaming` is operationally `desktop_mate`-only (see §5.3 operational note).
 - `AttachmentTTSHook`: separate hook lifecycle (turn-aggregate, not per-sentence), different sink for voice-note file delivery. Likely targets Telegram first.
 - Rename of `YURI_LTM_*`, `YURI_IDLE_*`, `YURI_NANOBOT_CONFIG`, `YURI_WORKSPACE` to drop the workspace-name prefix. Mechanical change but separate scope.
 - Hot reload of `tts_channel_modes.yml`.
