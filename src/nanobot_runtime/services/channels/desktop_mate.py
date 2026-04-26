@@ -36,8 +36,9 @@ from nanobot_runtime.models.desktop_mate import (
 from nanobot_runtime.clients.desktop_mate_rest import dispatch_http, parse_request_path, query_first
 from nanobot_runtime.services.channels.desktop_mate_server import _DesktopMateServerMixin
 from nanobot_runtime.services.channels.desktop_mate_tts import _DesktopMateTTSMixin
-from nanobot_runtime.services.hooks.tts import TTSChunk
+from nanobot_runtime.services.hooks.tts import TTSChunk, TTSSink
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
+from nanobot_runtime.services.tts.modes import ChannelModeMap, TTSMode
 
 
 # ── Registry ─────────────────────────────────────────────────────────────
@@ -339,19 +340,34 @@ def _channel_from_session_key(session_key: str | None) -> str | None:
     return prefix if sep else None
 
 
-class LazyChannelTTSSink:
-    """TTSSink that resolves the active DesktopMateChannel at send time.
+class LazyChannelTTSSink(TTSSink):
+    """Lazily resolve ``DesktopMateChannel`` + gate per channel TTS mode.
 
-    Avoids ordering constraints between hook factory and channel construction.
-    If the channel isn't available yet, chunks are silently dropped — the
-    agent loop stays healthy and the FE misses TTS for that window.
+    Avoids ordering constraints between hook factory and channel
+    construction: the channel is resolved per call to ``send_tts_chunk``
+    rather than wired in at sink construction.
+
+    The sink performs *two* checks in series before allowing synthesis:
+
+    1. **Mode gate**: ``mode_map.lookup(channel) == STREAMING``.
+    2. **Channel readiness**: the active DesktopMate stream has TTS on.
+
+    If the mode gate rejects, the readiness check is skipped — there's
+    nothing to deliver to anyway. See the design spec §5.3 for why
+    ``streaming`` is operationally bound to DesktopMate in this PR.
     """
 
-    def is_enabled(self) -> bool:
+    def __init__(self, mode_map: ChannelModeMap) -> None:
+        self._mode_map = mode_map
+
+    def is_enabled(self, session_key: str | None) -> bool:
+        mode = self._mode_map.lookup(_channel_from_session_key(session_key))
+        if mode is not TTSMode.STREAMING:
+            return False
         try:
             return get_desktop_mate_channel().is_tts_enabled_for_current_stream()
         except RuntimeError:
-            return True  # No channel yet — allow hook to do useful work.
+            return True  # No channel yet — preserves existing race-tolerance.
 
     async def send_tts_chunk(self, chunk: TTSChunk) -> None:
         try:
