@@ -1,4 +1,5 @@
 """Tests for LTMArgumentsHook — overrides user_id/agent_id on mcp_ltm_* calls."""
+
 from __future__ import annotations
 
 from nanobot.agent.hook import AgentHookContext

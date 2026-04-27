@@ -1,4 +1,5 @@
 """Tests for EmotionMapper — map emotion string/emoji → keyframe list."""
+
 from __future__ import annotations
 
 from pathlib import Path

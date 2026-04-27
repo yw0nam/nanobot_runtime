@@ -1,4 +1,5 @@
 """Config model and helpers for DesktopMateChannel."""
+
 from typing import Any
 
 from loguru import logger
@@ -14,10 +15,16 @@ class DesktopMateConfig(BaseModel):
     """
 
     enabled: bool = Field(default=True, description="Whether the channel is active.")
-    host: str = Field(default="127.0.0.1", description="Bind address for the WebSocket server.")
-    port: int = Field(default=8765, description="TCP port the WebSocket server listens on.")
+    host: str = Field(
+        default="127.0.0.1", description="Bind address for the WebSocket server."
+    )
+    port: int = Field(
+        default=8765, description="TCP port the WebSocket server listens on."
+    )
     path: str = Field(default="/ws", description="URL path for the WebSocket endpoint.")
-    token: str = Field(default="", description="Static bearer token; empty means no auth required.")
+    token: str = Field(
+        default="", description="Static bearer token; empty means no auth required."
+    )
     allow_from: list[str] = Field(
         default_factory=lambda: ["*"],
         description="Allowlist of client_id values; '*' accepts any client.",

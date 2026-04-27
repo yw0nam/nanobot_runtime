@@ -5,13 +5,13 @@ filter and the channel's static ``?token=`` auth (instead of the TTL pool).
 These unit tests exercise ``_dispatch_http`` directly with fake requests
 and a fake SessionManager — no real socket binding.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 from typing import Any
 
-import pytest
 
 from nanobot_runtime.services.channels.desktop_mate import (
     DesktopMateChannel,
@@ -19,9 +19,7 @@ from nanobot_runtime.services.channels.desktop_mate import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
+# ── Fakes ────────────────────────────────────────────────────────────────────
 
 
 class FakeHeaders(dict):
@@ -66,9 +64,7 @@ class FakeSessionManager:
         return key in self._deletable
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _make_channel(
@@ -89,12 +85,14 @@ def _body_json(response: Any) -> dict[str, Any]:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
+    return (
+        asyncio.get_event_loop().run_until_complete(coro)
+        if False
+        else asyncio.run(coro)
+    )
 
 
-# ---------------------------------------------------------------------------
-# Dispatch routing
-# ---------------------------------------------------------------------------
+# ── Dispatch routing ─────────────────────────────────────────────────────────
 
 
 def test_dispatch_unknown_path_returns_404():
@@ -123,22 +121,42 @@ def test_dispatch_non_upgrade_to_ws_path_is_404():
     assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# /api/sessions (list)
-# ---------------------------------------------------------------------------
+# ── /api/sessions (list) ─────────────────────────────────────────────────────
 
 
 def test_sessions_list_filters_prefix_and_strips_path():
     sm = FakeSessionManager(
         sessions=[
-            {"key": "desktop_mate:abc", "created_at": "t1", "updated_at": "t2", "path": "/x/abc.jsonl"},
-            {"key": "desktop_mate:def", "created_at": "t3", "updated_at": "t4", "path": "/x/def.jsonl"},
-            {"key": "websocket:foo", "created_at": "t5", "updated_at": "t6", "path": "/x/foo.jsonl"},
-            {"key": "slack:C1:1.0", "created_at": "t7", "updated_at": "t8", "path": "/x/s.jsonl"},
+            {
+                "key": "desktop_mate:abc",
+                "created_at": "t1",
+                "updated_at": "t2",
+                "path": "/x/abc.jsonl",
+            },
+            {
+                "key": "desktop_mate:def",
+                "created_at": "t3",
+                "updated_at": "t4",
+                "path": "/x/def.jsonl",
+            },
+            {
+                "key": "websocket:foo",
+                "created_at": "t5",
+                "updated_at": "t6",
+                "path": "/x/foo.jsonl",
+            },
+            {
+                "key": "slack:C1:1.0",
+                "created_at": "t7",
+                "updated_at": "t8",
+                "path": "/x/s.jsonl",
+            },
         ],
     )
     ch = _make_channel(session_manager=sm)
-    resp = asyncio.run(ch._dispatch_http(None, FakeRequest("/api/sessions?token=secret")))
+    resp = asyncio.run(
+        ch._dispatch_http(None, FakeRequest("/api/sessions?token=secret"))
+    )
     assert resp.status_code == 200
     data = _body_json(resp)
     keys = [s["key"] for s in data["sessions"]]
@@ -155,7 +173,9 @@ def test_sessions_list_401_when_token_missing():
 
 def test_sessions_list_401_when_token_wrong():
     ch = _make_channel(session_manager=FakeSessionManager())
-    resp = asyncio.run(ch._dispatch_http(None, FakeRequest("/api/sessions?token=bogus")))
+    resp = asyncio.run(
+        ch._dispatch_http(None, FakeRequest("/api/sessions?token=bogus"))
+    )
     assert resp.status_code == 401
 
 
@@ -169,7 +189,9 @@ def test_sessions_list_accepts_bearer_header():
 
 def test_sessions_list_503_when_manager_missing():
     ch = _make_channel(session_manager=None)
-    resp = asyncio.run(ch._dispatch_http(None, FakeRequest("/api/sessions?token=secret")))
+    resp = asyncio.run(
+        ch._dispatch_http(None, FakeRequest("/api/sessions?token=secret"))
+    )
     assert resp.status_code == 503
 
 
@@ -185,9 +207,7 @@ def test_sessions_list_allows_all_when_no_token_configured():
     assert resp.status_code == 200
 
 
-# ---------------------------------------------------------------------------
-# /api/sessions/{key}/messages (read)
-# ---------------------------------------------------------------------------
+# ── /api/sessions/{key}/messages (read) ──────────────────────────────────────
 
 
 def test_session_messages_happy_path():
@@ -254,16 +274,12 @@ def test_session_messages_404_when_not_found():
 def test_session_messages_401_no_token():
     ch = _make_channel(session_manager=FakeSessionManager())
     resp = asyncio.run(
-        ch._dispatch_http(
-            None, FakeRequest("/api/sessions/desktop_mate:x/messages")
-        )
+        ch._dispatch_http(None, FakeRequest("/api/sessions/desktop_mate:x/messages"))
     )
     assert resp.status_code == 401
 
 
-# ---------------------------------------------------------------------------
-# /api/sessions/{key}/delete
-# ---------------------------------------------------------------------------
+# ── /api/sessions/{key}/delete ───────────────────────────────────────────────
 
 
 def test_session_delete_true():

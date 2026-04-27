@@ -4,6 +4,7 @@ All unit tests use a fake `_WSConnection` (capturing sent frames in an
 in-memory list) to exercise the channel without binding a real socket.
 The last test binds a real ephemeral port to cover start()/stop() lifecycle.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +25,7 @@ from nanobot_runtime.services.hooks.tts import TTSChunk
 from nanobot_runtime.services.tts.modes import ChannelModeMap, TTSMode
 
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
+# ── Fakes ────────────────────────────────────────────────────────────────────
 
 
 class FakeConnection:
@@ -36,7 +35,11 @@ class FakeConnection:
     iterating .inbox (a list of strings) asynchronously.
     """
 
-    def __init__(self, inbox: list[str] | None = None, remote: tuple[str, int] = ("127.0.0.1", 12345)):
+    def __init__(
+        self,
+        inbox: list[str] | None = None,
+        remote: tuple[str, int] = ("127.0.0.1", 12345),
+    ):
         self.sent: list[str] = []
         self.inbox: list[str] = list(inbox or [])
         self.remote_address = remote
@@ -58,6 +61,7 @@ class FakeConnection:
         async def _gen():
             for item in list(self.inbox):
                 yield item
+
         return _gen()
 
 
@@ -73,7 +77,12 @@ class FakeBus:
         self.outbound.append(msg)
 
 
-def _make_channel(*, token: str = "secret", allow_from: list[str] | None = None, emotions: set[str] | None = None) -> tuple[DesktopMateChannel, FakeBus]:
+def _make_channel(
+    *,
+    token: str = "secret",
+    allow_from: list[str] | None = None,
+    emotions: set[str] | None = None,
+) -> tuple[DesktopMateChannel, FakeBus]:
     bus = FakeBus()
     config = DesktopMateConfig(
         token=token,
@@ -93,9 +102,7 @@ def _decode_frames(conn: FakeConnection) -> list[dict[str, Any]]:
     return [json.loads(raw) for raw in conn.sent]
 
 
-# ---------------------------------------------------------------------------
-# 1. stream_start via send()
-# ---------------------------------------------------------------------------
+# ── 1. stream_start via send() ───────────────────────────────────────────────
 
 
 async def test_send_stream_start_emits_event_frame():
@@ -118,9 +125,7 @@ async def test_send_stream_start_emits_event_frame():
     assert frames == [{"event": "stream_start", "chat_id": "chat-A"}]
 
 
-# ---------------------------------------------------------------------------
-# 2. send_delta strips emotion emojis
-# ---------------------------------------------------------------------------
+# ── 2. send_delta strips emotion emojis ──────────────────────────────────────
 
 
 async def test_send_delta_strips_emotion_emojis():
@@ -144,9 +149,7 @@ async def test_send_delta_strips_emotion_emojis():
     assert frames[1]["stream_id"] == "s-1"
 
 
-# ---------------------------------------------------------------------------
-# 3. send_tts_chunk emits full 6-field frame
-# ---------------------------------------------------------------------------
+# ── 3. send_tts_chunk emits full 6-field frame ───────────────────────────────
 
 
 async def test_send_tts_chunk_emits_full_frame():
@@ -155,7 +158,9 @@ async def test_send_tts_chunk_emits_full_frame():
     channel._attach("chat-A", conn)
 
     # First, register a stream so the channel knows where TTS chunks go.
-    await channel.send_delta("chat-A", "warmup", {"_stream_delta": True, "_stream_id": "s-1"})
+    await channel.send_delta(
+        "chat-A", "warmup", {"_stream_delta": True, "_stream_id": "s-1"}
+    )
     conn.sent.clear()
 
     chunk = TTSChunk(
@@ -168,20 +173,20 @@ async def test_send_tts_chunk_emits_full_frame():
     await channel.send_tts_chunk(chunk)
 
     frames = _decode_frames(conn)
-    assert frames == [{
-        "event": "tts_chunk",
-        "chat_id": "chat-A",
-        "sequence": 2,
-        "text": "hello there",
-        "audio_base64": "AAAA",
-        "emotion": "happy",
-        "keyframes": [{"duration": 0.3, "targets": {"expression": 1.0}}],
-    }]
+    assert frames == [
+        {
+            "event": "tts_chunk",
+            "chat_id": "chat-A",
+            "sequence": 2,
+            "text": "hello there",
+            "audio_base64": "AAAA",
+            "emotion": "happy",
+            "keyframes": [{"duration": 0.3, "targets": {"expression": 1.0}}],
+        }
+    ]
 
 
-# ---------------------------------------------------------------------------
-# 4. Frame ordering: deltas × 3, tts_chunks × 2, stream_end preserved
-# ---------------------------------------------------------------------------
+# ── 4. Frame ordering: deltas × 3, tts_chunks × 2, stream_end preserved ──────
 
 
 async def test_frame_ordering_delta_tts_stream_end():
@@ -194,8 +199,12 @@ async def test_frame_ordering_delta_tts_stream_end():
     await channel.send_delta("chat-A", "two ", meta)
     await channel.send_delta("chat-A", "three", meta)
 
-    await channel.send_tts_chunk(TTSChunk(sequence=0, text="one.", audio_base64=None, emotion=None, keyframes=[]))
-    await channel.send_tts_chunk(TTSChunk(sequence=1, text="two.", audio_base64=None, emotion=None, keyframes=[]))
+    await channel.send_tts_chunk(
+        TTSChunk(sequence=0, text="one.", audio_base64=None, emotion=None, keyframes=[])
+    )
+    await channel.send_tts_chunk(
+        TTSChunk(sequence=1, text="two.", audio_base64=None, emotion=None, keyframes=[])
+    )
 
     end_msg = OutboundMessage(
         channel="desktop_mate",
@@ -226,9 +235,7 @@ async def test_frame_ordering_delta_tts_stream_end():
     }
 
 
-# ---------------------------------------------------------------------------
-# 4a. send() suppresses iteration-boundary OutboundMessages (no _stream_end)
-# ---------------------------------------------------------------------------
+# ── 4a. send() suppresses iteration-boundary OutboundMessages (no _stream_end)
 
 
 async def test_send_suppresses_intermediate_iteration_outbound():
@@ -273,9 +280,7 @@ async def test_send_with_explicit_stream_end_still_emits():
     assert len(frames) == 1 and frames[0]["event"] == "stream_end"
 
 
-# ---------------------------------------------------------------------------
-# 4a-2. send_delta() drops empty _stream_end on a brand-new stream_id
-# ---------------------------------------------------------------------------
+# ── 4a-2. send_delta() drops empty _stream_end on a brand-new stream_id ──────
 
 
 async def test_send_delta_drops_empty_stream_end_on_new_stream_id():
@@ -324,9 +329,7 @@ async def test_send_delta_empty_stream_end_on_existing_stream_still_emits():
     assert len(frames) == 1 and frames[0]["event"] == "stream_end"
 
 
-# ---------------------------------------------------------------------------
-# 4b. stream_start auto-emitted on first delta with a new stream_id
-# ---------------------------------------------------------------------------
+# ── 4b. stream_start auto-emitted on first delta with a new stream_id ────────
 
 
 async def test_first_delta_auto_emits_stream_start():
@@ -359,9 +362,7 @@ async def test_second_delta_same_stream_does_not_repeat_start():
     assert events == ["stream_start", "delta", "delta"]
 
 
-# ---------------------------------------------------------------------------
-# 4c. tts_chunk arriving AFTER stream_end still routes (TTS Barrier race)
-# ---------------------------------------------------------------------------
+# ── 4c. tts_chunk arriving AFTER stream_end still routes (TTS Barrier race) ──
 
 
 async def test_tts_chunk_after_stream_end_still_routes():
@@ -377,22 +378,26 @@ async def test_tts_chunk_after_stream_end_still_routes():
     # Full stream lifecycle: deltas then _stream_end.
     meta = {"_stream_delta": True, "_stream_id": "s-late"}
     await channel.send_delta("chat-A", "hello", meta)
-    await channel.send(OutboundMessage(
-        channel="desktop_mate",
-        chat_id="chat-A",
-        content="hello",
-        metadata={"_stream_end": True, "_stream_id": "s-late"},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="desktop_mate",
+            chat_id="chat-A",
+            content="hello",
+            metadata={"_stream_end": True, "_stream_id": "s-late"},
+        )
+    )
 
     # Now (simulating the barrier race) a tts_chunk synthesised during
     # the turn arrives.
-    await channel.send_tts_chunk(TTSChunk(
-        sequence=0,
-        text="hello",
-        audio_base64="AAAA",
-        emotion=None,
-        keyframes=[],
-    ))
+    await channel.send_tts_chunk(
+        TTSChunk(
+            sequence=0,
+            text="hello",
+            audio_base64="AAAA",
+            emotion=None,
+            keyframes=[],
+        )
+    )
 
     frames = _decode_frames(conn)
     events = [f["event"] for f in frames]
@@ -402,16 +407,16 @@ async def test_tts_chunk_after_stream_end_still_routes():
     assert tts_frame["chat_id"] == "chat-A"
 
 
-# ---------------------------------------------------------------------------
-# 5. Inbound parsing: new_chat + message
-# ---------------------------------------------------------------------------
+# ── 5. Inbound parsing: new_chat + message ───────────────────────────────────
 
 
 async def test_inbound_new_chat_generates_chat_id_and_publishes():
     channel, bus = _make_channel()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hello", "tts_enabled": True}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hello", "tts_enabled": True}),
+        ]
+    )
 
     await channel._connection_loop(conn, sender_id="user-1")
 
@@ -426,9 +431,18 @@ async def test_inbound_new_chat_generates_chat_id_and_publishes():
 
 async def test_inbound_message_uses_supplied_chat_id():
     channel, bus = _make_channel()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "message", "chat_id": "chat-42", "content": "hi", "tts_enabled": False}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps(
+                {
+                    "type": "message",
+                    "chat_id": "chat-42",
+                    "content": "hi",
+                    "tts_enabled": False,
+                }
+            ),
+        ]
+    )
 
     await channel._connection_loop(conn, sender_id="user-1")
 
@@ -439,9 +453,7 @@ async def test_inbound_message_uses_supplied_chat_id():
     assert inbound.metadata.get("tts_enabled") is False
 
 
-# ---------------------------------------------------------------------------
-# 6. Auth: bad token rejected
-# ---------------------------------------------------------------------------
+# ── 6. Auth: bad token rejected ──────────────────────────────────────────────
 
 
 async def test_bad_token_is_rejected():
@@ -469,9 +481,7 @@ async def test_handshake_closes_connection_with_4003_on_bad_token():
     assert conn.close_code == 4003
 
 
-# ---------------------------------------------------------------------------
-# 7. Proactive flag passthrough
-# ---------------------------------------------------------------------------
+# ── 7. Proactive flag passthrough ────────────────────────────────────────────
 
 
 async def test_proactive_flag_included_in_stream_start():
@@ -502,22 +512,24 @@ async def test_proactive_flag_included_in_delta_and_tts_and_end():
         {"_stream_delta": True, "_stream_id": "s-1", "proactive": True},
     )
     # Register current stream for tts routing with proactive flag
-    await channel.send_tts_chunk(TTSChunk(sequence=0, text="hi", audio_base64=None, emotion=None, keyframes=[]))
+    await channel.send_tts_chunk(
+        TTSChunk(sequence=0, text="hi", audio_base64=None, emotion=None, keyframes=[])
+    )
 
-    await channel.send(OutboundMessage(
-        channel="desktop_mate",
-        chat_id="chat-A",
-        content="hi",
-        metadata={"_stream_end": True, "_stream_id": "s-1", "proactive": True},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="desktop_mate",
+            chat_id="chat-A",
+            content="hi",
+            metadata={"_stream_end": True, "_stream_id": "s-1", "proactive": True},
+        )
+    )
 
     frames = _decode_frames(conn)
     assert all(f.get("proactive") is True for f in frames), frames
 
 
-# ---------------------------------------------------------------------------
-# 8. start()/stop() lifecycle on ephemeral port
-# ---------------------------------------------------------------------------
+# ── 8. start()/stop() lifecycle on ephemeral port ────────────────────────────
 
 
 async def test_start_stop_lifecycle_binds_and_cleans_up():
@@ -536,9 +548,7 @@ async def test_start_stop_lifecycle_binds_and_cleans_up():
     assert channel.is_running is False
 
 
-# ---------------------------------------------------------------------------
-# 9. Handshake success emits ReadyFrame
-# ---------------------------------------------------------------------------
+# ── 9. Handshake success emits ReadyFrame ────────────────────────────────────
 
 
 async def test_successful_handshake_emits_ready_frame():
@@ -563,9 +573,7 @@ async def test_successful_handshake_emits_ready_frame():
     assert frame["server_time"] > 0
 
 
-# ---------------------------------------------------------------------------
-# 10. Config defaults include ping_interval + max_message_bytes (6MB)
-# ---------------------------------------------------------------------------
+# ── 10. Config defaults include ping_interval + max_message_bytes (6MB) ──────
 
 
 def test_desktop_mate_config_defaults_keepalive_and_max_size():
@@ -576,23 +584,21 @@ def test_desktop_mate_config_defaults_keepalive_and_max_size():
     assert cfg.max_message_bytes == 60 * 1024 * 1024
 
 
-# ---------------------------------------------------------------------------
-# 11. serve() receives the keepalive + max_size kwargs
-# ---------------------------------------------------------------------------
+# ── 11. serve() receives the keepalive + max_size kwargs ─────────────────────
 
 
-# ---------------------------------------------------------------------------
-# 11b. tts_enabled switch (per-message + URL override)
-# ---------------------------------------------------------------------------
+# ── 11b. tts_enabled switch (per-message + URL override) ─────────────────────
 
 
 async def test_new_chat_with_tts_disabled_drops_tts_chunk():
     """FE sends ``tts_enabled: false`` in new_chat → channel must not emit
     any tts_chunk for that chat, even if synthesis produces one."""
     channel, _ = _make_channel()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": False}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": False}),
+        ]
+    )
     await channel._connection_loop(conn, sender_id="user-1")
     chat_id = next(iter(channel._chat_conn.keys()))
 
@@ -604,10 +610,15 @@ async def test_new_chat_with_tts_disabled_drops_tts_chunk():
     )
     conn.sent.clear()
 
-    await channel.send_tts_chunk(TTSChunk(
-        sequence=0, text="hi", audio_base64="AAAA",
-        emotion=None, keyframes=[],
-    ))
+    await channel.send_tts_chunk(
+        TTSChunk(
+            sequence=0,
+            text="hi",
+            audio_base64="AAAA",
+            emotion=None,
+            keyframes=[],
+        )
+    )
 
     events = [f.get("event") for f in _decode_frames(conn)]
     assert "tts_chunk" not in events, f"tts_chunk should be suppressed; got {events}"
@@ -617,9 +628,11 @@ async def test_message_defaults_tts_enabled_true():
     """Absent ``tts_enabled`` in an inbound message must default to True
     so existing clients aren't silently muted."""
     channel, _ = _make_channel()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi"}),  # no tts_enabled
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi"}),  # no tts_enabled
+        ]
+    )
     await channel._connection_loop(conn, sender_id="user-1")
     chat_id = next(iter(channel._chat_conn.keys()))
 
@@ -630,10 +643,15 @@ async def test_message_defaults_tts_enabled_true():
     )
     conn.sent.clear()
 
-    await channel.send_tts_chunk(TTSChunk(
-        sequence=0, text="hi", audio_base64="AAAA",
-        emotion=None, keyframes=[],
-    ))
+    await channel.send_tts_chunk(
+        TTSChunk(
+            sequence=0,
+            text="hi",
+            audio_base64="AAAA",
+            emotion=None,
+            keyframes=[],
+        )
+    )
 
     events = [f.get("event") for f in _decode_frames(conn)]
     assert "tts_chunk" in events
@@ -656,9 +674,11 @@ async def test_url_override_tts_zero_disables_connection_wide(monkeypatch):
 
     # Attach a chat and simulate a message with ``tts_enabled: true`` —
     # URL override must win.
-    conn_inbox = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
-    ])
+    conn_inbox = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
+        ]
+    )
     # Copy the override onto the per-test inbox connection.
     channel._apply_connection_tts_override(conn_inbox, {"tts": ["0"]})
     await channel._connection_loop(conn_inbox, sender_id="user-1")
@@ -671,10 +691,15 @@ async def test_url_override_tts_zero_disables_connection_wide(monkeypatch):
     )
     conn_inbox.sent.clear()
 
-    await channel.send_tts_chunk(TTSChunk(
-        sequence=0, text="hi", audio_base64="AAAA",
-        emotion=None, keyframes=[],
-    ))
+    await channel.send_tts_chunk(
+        TTSChunk(
+            sequence=0,
+            text="hi",
+            audio_base64="AAAA",
+            emotion=None,
+            keyframes=[],
+        )
+    )
 
     events = [f.get("event") for f in _decode_frames(conn_inbox)]
     assert "tts_chunk" not in events
@@ -683,9 +708,11 @@ async def test_url_override_tts_zero_disables_connection_wide(monkeypatch):
 async def test_url_tts_equals_one_is_a_noop():
     """``?tts=1`` (or absent) leaves the default path enabled."""
     channel, _ = _make_channel(token="")
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi"}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi"}),
+        ]
+    )
     channel._apply_connection_tts_override(conn, {"tts": ["1"]})
     await channel._connection_loop(conn, sender_id="user-1")
     chat_id = next(iter(channel._chat_conn.keys()))
@@ -697,18 +724,21 @@ async def test_url_tts_equals_one_is_a_noop():
     )
     conn.sent.clear()
 
-    await channel.send_tts_chunk(TTSChunk(
-        sequence=0, text="hi", audio_base64="AAAA",
-        emotion=None, keyframes=[],
-    ))
+    await channel.send_tts_chunk(
+        TTSChunk(
+            sequence=0,
+            text="hi",
+            audio_base64="AAAA",
+            emotion=None,
+            keyframes=[],
+        )
+    )
 
     events = [f.get("event") for f in _decode_frames(conn)]
     assert "tts_chunk" in events
 
 
-# ---------------------------------------------------------------------------
-# 12. __init__ accepts dict section (from nanobot.json via ChannelManager)
-# ---------------------------------------------------------------------------
+# ── 12. __init__ accepts dict section (from nanobot.json via ChannelManager) ─
 
 
 def test_init_accepts_dict_section_snake_case():
@@ -764,12 +794,12 @@ def test_init_loads_emotion_emojis_from_yaml_path(tmp_path):
     yaml_path = tmp_path / "tts_rules.yml"
     yaml_path.write_text(
         "emotion_motion_map:\n"
-        "  \"😊\":\n"
+        '  "😊":\n'
         "    keyframes:\n"
         "      - duration: 0.3\n"
         "        targets:\n"
         "          happy: 1.0\n"
-        "  \"😢\":\n"
+        '  "😢":\n'
         "    keyframes:\n"
         "      - duration: 0.3\n"
         "        targets:\n"
@@ -819,7 +849,6 @@ def test_init_ignores_unknown_section_keys():
 async def test_start_passes_ping_and_max_size_to_serve(monkeypatch):
     """start() must forward ping_interval / ping_timeout / max_size to
     websockets.serve() so the WS protocol handles keepalive for us."""
-    import nanobot_runtime.services.channels.desktop_mate as dm
 
     captured: dict[str, Any] = {}
 
@@ -949,7 +978,9 @@ class TestLazyChannelTTSSinkIsEnabled:
         sink = LazyChannelTTSSink(mode_map=streaming_only_map)
         assert sink.is_enabled("telegram:42:topic:7") is False
 
-    def test_session_key_none_uses_default_mode(self, streaming_only_map: ChannelModeMap):
+    def test_session_key_none_uses_default_mode(
+        self, streaming_only_map: ChannelModeMap
+    ):
         sink = LazyChannelTTSSink(mode_map=streaming_only_map)
         assert sink.is_enabled(None) is False  # default is NONE
 

@@ -9,6 +9,7 @@ Two install paths are exposed:
 
 Both are imported by the gateway launcher; only one should run per process.
 """
+
 import asyncio
 from datetime import datetime
 from typing import Any, Callable

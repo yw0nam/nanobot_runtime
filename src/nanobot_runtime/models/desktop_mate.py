@@ -24,6 +24,7 @@ channel layer so every failure mode surfaces to the client as an
 particular must not fail at the Pydantic boundary, because a schema
 ValidationError would be silently dropped by the inbound loop).
 """
+
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import (

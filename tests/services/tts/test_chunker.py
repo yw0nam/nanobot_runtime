@@ -2,6 +2,7 @@
 into sentence-terminated chunks, filters <think> reasoning blocks, and
 yields a remainder on flush().
 """
+
 from __future__ import annotations
 
 from nanobot_runtime.services.tts.chunker import SentenceChunker

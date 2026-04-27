@@ -7,6 +7,7 @@ Methods access state initialised in DesktopMateChannel.__init__:
 ``_tts_enabled_per_chat``, ``_tts_enabled_per_conn``, ``_current_stream_id``,
 ``_streams``, ``_chat_conn``, ``_emotion_strip_re``, and ``_send_frame``.
 """
+
 from typing import Any
 
 from loguru import logger

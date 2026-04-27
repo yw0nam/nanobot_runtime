@@ -5,6 +5,7 @@ the loader's failure modes (which surface as boot-time ValueErrors), and
 the map's lookup semantics (None / unknown channel both fall through to
 the configured default).
 """
+
 from pathlib import Path
 from typing import Callable
 
@@ -63,13 +64,18 @@ class TestChannelModeMapLookup:
     def test_known_channel_returns_mapped_mode(self):
         m = ChannelModeMap(
             default=TTSMode.NONE,
-            channels={"desktop_mate": TTSMode.STREAMING, "telegram": TTSMode.ATTACHMENT},
+            channels={
+                "desktop_mate": TTSMode.STREAMING,
+                "telegram": TTSMode.ATTACHMENT,
+            },
         )
         assert m.lookup("desktop_mate") is TTSMode.STREAMING
         assert m.lookup("telegram") is TTSMode.ATTACHMENT
 
     def test_unknown_channel_returns_default(self):
-        m = ChannelModeMap(default=TTSMode.NONE, channels={"desktop_mate": TTSMode.STREAMING})
+        m = ChannelModeMap(
+            default=TTSMode.NONE, channels={"desktop_mate": TTSMode.STREAMING}
+        )
         assert m.lookup("slack") is TTSMode.NONE
 
     def test_none_returns_default(self):
@@ -146,7 +152,9 @@ class TestLoadChannelModes:
         assert "default" in msg
         assert str(p) in msg
 
-    def test_unknown_channel_mode_raises_value_error_with_channel_name(self, tmp_path: Path):
+    def test_unknown_channel_mode_raises_value_error_with_channel_name(
+        self, tmp_path: Path
+    ):
         p = tmp_path / "modes.yml"
         p.write_text("channels:\n  telegram: brodcast\n")
         with pytest.raises(ValueError) as ei:

@@ -3,13 +3,13 @@
 Each scenario exercises the channel + hook composition end-to-end in
 process. See :mod:`harness` for the simulation primitives.
 """
+
 from __future__ import annotations
 
 import json
 
-import pytest
 
-from .harness import FakeConnection, Harness, build_harness
+from .harness import FakeConnection, build_harness
 
 
 # =========================================================================
@@ -20,9 +20,11 @@ from .harness import FakeConnection, Harness, build_harness
 
 async def test_scenario_a_new_session_full_lifecycle() -> None:
     harness = build_harness()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
+        ]
+    )
 
     await harness.drive_inbound(conn)
     chat_id = next(iter(harness.channel._chat_conn.keys()))
@@ -49,14 +51,18 @@ async def test_scenario_a_new_session_full_lifecycle() -> None:
 
 async def test_scenario_b_resumed_session_uses_supplied_chat_id() -> None:
     harness = build_harness()
-    conn = FakeConnection(inbox=[
-        json.dumps({
-            "type": "message",
-            "chat_id": "chat-resume-42",
-            "content": "follow up",
-            "tts_enabled": True,
-        }),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps(
+                {
+                    "type": "message",
+                    "chat_id": "chat-resume-42",
+                    "content": "follow up",
+                    "tts_enabled": True,
+                }
+            ),
+        ]
+    )
 
     await harness.drive_inbound(conn)
     assert harness.bus.inbound[0].chat_id == "chat-resume-42"
@@ -118,7 +124,9 @@ async def test_scenario_d_emotion_emoji_stripped_in_delta_preserved_in_tts() -> 
 
     assert delta_frames, "expected at least one delta frame"
     for f in delta_frames:
-        assert "😊" not in f["text"], f"emoji must be stripped from delta; got {f['text']!r}"
+        assert (
+            "😊" not in f["text"]
+        ), f"emoji must be stripped from delta; got {f['text']!r}"
 
     assert tts_frames, "expected a tts_chunk (synth fired)"
     # The original sentence text (with emoji) is passed to TTS —
@@ -127,9 +135,9 @@ async def test_scenario_d_emotion_emoji_stripped_in_delta_preserved_in_tts() -> 
     # recorded separately. Preprocessor currently keeps the emoji in
     # the cleaned text (it only strips *action*/[meta]), so tts_chunk.text
     # includes it.
-    assert any("😊" in f["text"] for f in tts_frames), (
-        f"emoji must be preserved in tts_chunk.text; got texts={[f['text'] for f in tts_frames]}"
-    )
+    assert any(
+        "😊" in f["text"] for f in tts_frames
+    ), f"emoji must be preserved in tts_chunk.text; got texts={[f['text'] for f in tts_frames]}"
     assert tts_frames[0]["emotion"] == "😊"
 
 
@@ -165,9 +173,11 @@ async def test_scenario_f_reconnect_with_existing_chat_id() -> None:
     harness = build_harness()
 
     # First connection: new_chat creates a chat_id.
-    conn1 = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "first"}),
-    ])
+    conn1 = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "first"}),
+        ]
+    )
     await harness.drive_inbound(conn1)
     original_chat_id = harness.bus.inbound[0].chat_id
     await harness.simulate_agent_turn(original_chat_id, deltas=["reply one."])
@@ -177,22 +187,27 @@ async def test_scenario_f_reconnect_with_existing_chat_id() -> None:
     assert original_chat_id not in harness.channel._chat_conn
 
     # Reconnect with the same chat_id via `message`.
-    conn2 = FakeConnection(inbox=[
-        json.dumps({
-            "type": "message",
-            "chat_id": original_chat_id,
-            "content": "second",
-        }),
-    ])
+    conn2 = FakeConnection(
+        inbox=[
+            json.dumps(
+                {
+                    "type": "message",
+                    "chat_id": original_chat_id,
+                    "content": "second",
+                }
+            ),
+        ]
+    )
     await harness.drive_inbound(conn2)
     assert harness.bus.inbound[-1].chat_id == original_chat_id
     await harness.simulate_agent_turn(original_chat_id, deltas=["reply two."])
 
     # Post-reconnect reply must land on conn2, not conn1.
     conn2_frames = harness.frames(conn2)
-    assert any("reply two" in f.get("content", "") or "reply" in f.get("text", "") for f in conn2_frames), (
-        f"expected reply frames on conn2; got {conn2_frames}"
-    )
+    assert any(
+        "reply two" in f.get("content", "") or "reply" in f.get("text", "")
+        for f in conn2_frames
+    ), f"expected reply frames on conn2; got {conn2_frames}"
 
 
 # =========================================================================
@@ -203,9 +218,11 @@ async def test_scenario_f_reconnect_with_existing_chat_id() -> None:
 
 async def test_scenario_g_tts_off_via_url_override_skips_synth_and_frame() -> None:
     harness = build_harness()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": True}),
+        ]
+    )
     # URL override wins over the per-message flag.
     harness.tts_override_tts_zero(conn)
     await harness.drive_inbound(conn)
@@ -213,9 +230,9 @@ async def test_scenario_g_tts_off_via_url_override_skips_synth_and_frame() -> No
 
     await harness.simulate_agent_turn(chat_id, deltas=["Hello there."])
 
-    assert harness.synth.calls == [], (
-        f"synthesizer must not be invoked when URL ?tts=0; got {harness.synth.calls}"
-    )
+    assert (
+        harness.synth.calls == []
+    ), f"synthesizer must not be invoked when URL ?tts=0; got {harness.synth.calls}"
     events = harness.events(conn)
     assert "tts_chunk" not in events, events
 
@@ -227,17 +244,19 @@ async def test_scenario_g_tts_off_via_url_override_skips_synth_and_frame() -> No
 
 async def test_scenario_h_tts_off_via_inbound_flag_skips_synth_and_frame() -> None:
     harness = build_harness()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": False}),
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi", "tts_enabled": False}),
+        ]
+    )
     await harness.drive_inbound(conn)
     chat_id = next(iter(harness.channel._chat_conn.keys()))
 
     await harness.simulate_agent_turn(chat_id, deltas=["Hello there."])
 
-    assert harness.synth.calls == [], (
-        f"synthesizer must not be invoked when tts_enabled=False; got {harness.synth.calls}"
-    )
+    assert (
+        harness.synth.calls == []
+    ), f"synthesizer must not be invoked when tts_enabled=False; got {harness.synth.calls}"
     events = harness.events(conn)
     assert "tts_chunk" not in events, events
 
@@ -250,9 +269,11 @@ async def test_scenario_h_tts_off_via_inbound_flag_skips_synth_and_frame() -> No
 
 async def test_scenario_i_tts_default_enabled_when_flag_absent() -> None:
     harness = build_harness()
-    conn = FakeConnection(inbox=[
-        json.dumps({"type": "new_chat", "content": "hi"}),  # no tts_enabled
-    ])
+    conn = FakeConnection(
+        inbox=[
+            json.dumps({"type": "new_chat", "content": "hi"}),  # no tts_enabled
+        ]
+    )
     await harness.drive_inbound(conn)
     chat_id = next(iter(harness.channel._chat_conn.keys()))
 

@@ -5,6 +5,7 @@ This test plugs :func:`install_idle_system_job` into a real
 ``CronService`` to prove the glue registers, fires, and routes correctly
 without a gateway subprocess.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +14,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
-import pytest
 from nanobot.cron.service import CronService
-from nanobot.cron.types import CronJob, CronPayload, CronSchedule
+from nanobot.cron.types import CronJob, CronSchedule
 
 from nanobot_runtime.config.idle import IdleConfig
 from nanobot_runtime.services.proactive.installer import (
-    IDLE_SYSTEM_JOB_ID,
     install_idle_system_job,
 )
 
@@ -34,7 +33,10 @@ async def test_real_cron_fires_scanner_and_nudges_idle_session(tmp_path) -> None
 
     sessions = MagicMock()
     sessions.list_sessions.return_value = [
-        {"key": "desktop_mate:abc", "updated_at": (now - timedelta(seconds=3600)).isoformat()},
+        {
+            "key": "desktop_mate:abc",
+            "updated_at": (now - timedelta(seconds=3600)).isoformat(),
+        },
     ]
     sessions.get_or_create.return_value = SimpleNamespace(
         updated_at=now - timedelta(seconds=3600),
@@ -88,7 +90,9 @@ async def test_real_cron_preserves_existing_on_job(tmp_path) -> None:
         idle_agent.bus.publish_inbound = AsyncMock()
         install_idle_system_job(
             agent=idle_agent,
-            sessions=MagicMock(list_sessions=MagicMock(return_value=[]), get_or_create=MagicMock()),
+            sessions=MagicMock(
+                list_sessions=MagicMock(return_value=[]), get_or_create=MagicMock()
+            ),
             cron=cron,
             config=IdleConfig(
                 enabled=True,

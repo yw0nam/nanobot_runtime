@@ -3,6 +3,7 @@
 Matches the Protocol expected by LTMInjectionHook (and future LTM hooks),
 so production code uses the real ltm-mcp server while tests inject fakes.
 """
+
 from typing import Any
 
 from fastmcp import Client

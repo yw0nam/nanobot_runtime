@@ -1,6 +1,7 @@
 """Tests for LTMSavingConsolidator — wraps nanobot Consolidator to push
 archived conversation turns (summary + raw user turns) into LTM.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -75,13 +76,15 @@ async def test_archive_pushes_user_turns_but_skips_assistant_and_tool() -> None:
     ltm = _FakeLTM()
     wrapper = LTMSavingConsolidator(inner, ltm, user_id="u1")
 
-    await wrapper.archive([
-        {"role": "user", "content": "I like coffee"},
-        {"role": "assistant", "content": "noted"},
-        {"role": "user", "content": "also tea"},
-        {"role": "tool", "content": "{}"},
-        {"role": "system", "content": "ignore this"},
-    ])
+    await wrapper.archive(
+        [
+            {"role": "user", "content": "I like coffee"},
+            {"role": "assistant", "content": "noted"},
+            {"role": "user", "content": "also tea"},
+            {"role": "tool", "content": "{}"},
+            {"role": "system", "content": "ignore this"},
+        ]
+    )
 
     contents = [c["content"] for c in ltm.add_calls]
     assert "I like coffee" in contents
@@ -130,12 +133,14 @@ async def test_archive_skips_empty_user_content() -> None:
     ltm = _FakeLTM()
     wrapper = LTMSavingConsolidator(inner, ltm, user_id="u1")
 
-    await wrapper.archive([
-        {"role": "user", "content": ""},
-        {"role": "user", "content": None},
-        {"role": "user"},  # missing content key
-        {"role": "user", "content": "keep"},
-    ])
+    await wrapper.archive(
+        [
+            {"role": "user", "content": ""},
+            {"role": "user", "content": None},
+            {"role": "user"},  # missing content key
+            {"role": "user", "content": "keep"},
+        ]
+    )
 
     contents = [c["content"] for c in ltm.add_calls]
     # summary is always pushed when non-empty; user turns only include "keep"

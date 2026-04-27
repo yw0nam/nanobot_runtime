@@ -5,6 +5,7 @@ DesktopMateChannel is a singleton created by nanobot's ChannelManager on
 a separate code path. This shim resolves the channel on-demand so the
 two construction orders don't have to be coordinated.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -41,9 +42,7 @@ def setup_function(_fn):
     _reset_registry_for_tests()
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
+# ── Registry ─────────────────────────────────────────────────────────────────
 
 
 def test_get_channel_raises_before_any_instance_created():
@@ -64,9 +63,7 @@ def test_latest_channel_overrides_previous():
     assert first is not second
 
 
-# ---------------------------------------------------------------------------
-# Lazy TTS sink
-# ---------------------------------------------------------------------------
+# ── Lazy TTS sink ────────────────────────────────────────────────────────────
 
 
 async def test_lazy_sink_drops_chunk_when_channel_absent(caplog):
@@ -155,15 +152,18 @@ async def test_lazy_sink_forwards_to_registered_channel():
     channel._current_stream_id = "s-1"
 
     sink = LazyChannelTTSSink(mode_map=_streaming_map())
-    await sink.send_tts_chunk(TTSChunk(
-        sequence=3,
-        text="hello",
-        audio_base64="QUJDRA==",
-        emotion="happy",
-        keyframes=[],
-    ))
+    await sink.send_tts_chunk(
+        TTSChunk(
+            sequence=3,
+            text="hello",
+            audio_base64="QUJDRA==",
+            emotion="happy",
+            keyframes=[],
+        )
+    )
 
     import json
+
     assert len(conn.sent) == 1
     frame = json.loads(conn.sent[0])
     assert frame["event"] == "tts_chunk"

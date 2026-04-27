@@ -4,6 +4,7 @@ These tests verify the three points where our code meets nanobot's
 installed package — if any of them break, the gateway won't start and
 silent failure is likely. Run once per environment change.
 """
+
 from __future__ import annotations
 
 from importlib.metadata import entry_points
@@ -36,16 +37,18 @@ def test_channels_config_preserves_desktop_mate_section_as_dict():
     """
     from nanobot.config.schema import ChannelsConfig
 
-    cfg = ChannelsConfig.model_validate({
-        "desktop_mate": {
-            "enabled": True,
-            "host": "127.0.0.1",
-            "port": 8765,
-            "allowFrom": ["*"],
-            "pingIntervalS": 15.0,
-            "maxMessageBytes": 4_000_000,
+    cfg = ChannelsConfig.model_validate(
+        {
+            "desktop_mate": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": 8765,
+                "allowFrom": ["*"],
+                "pingIntervalS": 15.0,
+                "maxMessageBytes": 4_000_000,
+            }
         }
-    })
+    )
 
     section = getattr(cfg, "desktop_mate")
     assert isinstance(section, dict)

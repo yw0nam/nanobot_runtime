@@ -11,6 +11,7 @@ Auth model is intentionally simpler than nanobot's TTL-bound token pool:
 we reuse the static ``?token=`` used for the WebSocket handshake.
 Rotating tokens can layer on later without changing the REST shape.
 """
+
 import email.utils
 import http
 import json
@@ -122,7 +123,9 @@ def _token_valid(token_cfg: str, request: WsRequest) -> bool:
     return supplied is not None and supplied == expected
 
 
-def handle_sessions_list(token: str, session_manager: Any, request: WsRequest) -> Response:
+def handle_sessions_list(
+    token: str, session_manager: Any, request: WsRequest
+) -> Response:
     if not _token_valid(token, request):
         return http_error(401, "Unauthorized")
     if session_manager is None:

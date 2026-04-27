@@ -5,6 +5,7 @@ outbound frames (stream_start/delta/stream_end/tts_chunk) and inbound
 envelopes (new_chat/message). The channel implementation is expected to
 build these models and serialise with ``model_dump_json(exclude_none=True)``.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,9 +27,7 @@ from nanobot_runtime.models.desktop_mate import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Outbound — ready
-# ---------------------------------------------------------------------------
+# ── Outbound — ready ─────────────────────────────────────────────────────────
 
 
 def test_ready_frame_serialises_fully():
@@ -56,9 +55,7 @@ def test_ready_frame_event_is_literal():
         )
 
 
-# ---------------------------------------------------------------------------
-# Outbound — stream_start
-# ---------------------------------------------------------------------------
+# ── Outbound — stream_start ──────────────────────────────────────────────────
 
 
 def test_stream_start_minimal_omits_proactive():
@@ -79,9 +76,7 @@ def test_stream_start_event_is_literal():
         StreamStartFrame(event="stream_end", chat_id="chat-A")  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
-# Outbound — delta
-# ---------------------------------------------------------------------------
+# ── Outbound — delta ─────────────────────────────────────────────────────────
 
 
 def test_delta_minimal():
@@ -107,9 +102,7 @@ def test_delta_with_stream_id_and_proactive():
     }
 
 
-# ---------------------------------------------------------------------------
-# Outbound — stream_end
-# ---------------------------------------------------------------------------
+# ── Outbound — stream_end ────────────────────────────────────────────────────
 
 
 def test_stream_end_carries_full_content():
@@ -133,9 +126,7 @@ def test_stream_end_with_proactive():
     }
 
 
-# ---------------------------------------------------------------------------
-# Outbound — tts_chunk
-# ---------------------------------------------------------------------------
+# ── Outbound — tts_chunk ─────────────────────────────────────────────────────
 
 
 def test_tts_chunk_full_payload():
@@ -191,9 +182,7 @@ def test_tts_chunk_with_proactive():
     assert payload["proactive"] is True
 
 
-# ---------------------------------------------------------------------------
-# Inbound — new_chat / message discriminated union
-# ---------------------------------------------------------------------------
+# ── Inbound — new_chat / message discriminated union ─────────────────────────
 
 
 def test_parse_inbound_new_chat():
@@ -212,13 +201,15 @@ def test_parse_inbound_message_requires_chat_id():
 
 
 def test_parse_inbound_message_with_chat_id():
-    raw = json.dumps({
-        "type": "message",
-        "chat_id": "chat-42",
-        "content": "hi",
-        "tts_enabled": False,
-        "reference_id": "ref-1",
-    })
+    raw = json.dumps(
+        {
+            "type": "message",
+            "chat_id": "chat-42",
+            "content": "hi",
+            "tts_enabled": False,
+            "reference_id": "ref-1",
+        }
+    )
     env = parse_inbound(raw)
     assert isinstance(env, MessageFrame)
     assert env.chat_id == "chat-42"
@@ -268,9 +259,7 @@ def test_image_rejected_frame_with_chat_id():
 
 def test_inbound_envelope_is_tagged_union():
     # Positive control: InboundEnvelope should discriminate on `type`.
-    new_chat = InboundEnvelope.validate_python(
-        {"type": "new_chat", "content": "hello"}
-    )
+    new_chat = InboundEnvelope.validate_python({"type": "new_chat", "content": "hello"})
     assert isinstance(new_chat, NewChatFrame)
 
     msg = InboundEnvelope.validate_python(

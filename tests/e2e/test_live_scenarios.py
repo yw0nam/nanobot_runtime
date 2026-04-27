@@ -23,19 +23,17 @@ Scenario I (default-on guard) is covered by the in-process suite only
 
 Run: ``pytest tests/e2e/ -m e2e`` (not collected by default).
 """
+
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
 pytestmark = pytest.mark.e2e
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
+# ── Shared helpers ───────────────────────────────────────────────────────────
 
 
 SYNTHESIZE_LOG_MARKER = "IrodoriClient.synthesize:"
@@ -59,15 +57,16 @@ async def run_turn_and_drain(
     await client.drain(drain_seconds)
 
 
-# ---------------------------------------------------------------------------
-# Scenario A — new session full lifecycle
-# ---------------------------------------------------------------------------
+# ── Scenario A — new session full lifecycle ──────────────────────────────────
 
 
 async def test_a_new_session_full_lifecycle(gateway, live_client) -> None:
     client = await live_client(client_id="e2e-A")
     ready = await client.wait_for_event("ready", timeout=5.0)
-    assert isinstance(ready.get("connection_id"), str) and len(ready["connection_id"]) == 36
+    assert (
+        isinstance(ready.get("connection_id"), str)
+        and len(ready["connection_id"]) == 36
+    )
 
     await run_turn_and_drain(
         client,
@@ -84,9 +83,7 @@ async def test_a_new_session_full_lifecycle(gateway, live_client) -> None:
     assert events.count("tts_chunk") >= 1, events
 
 
-# ---------------------------------------------------------------------------
-# Scenario B — resumed session via `message` with explicit chat_id
-# ---------------------------------------------------------------------------
+# ── Scenario B — resumed session via `message` with explicit chat_id ─────────
 
 
 async def test_b_resumed_session_with_explicit_chat_id(gateway, live_client) -> None:
@@ -100,13 +97,15 @@ async def test_b_resumed_session_with_explicit_chat_id(gateway, live_client) -> 
     )
 
     frames = client.frames
-    chat_ids = {f.get("chat_id") for f in frames if "chat_id" in f and f.get("event") != "ready"}
-    assert chat_ids == {chat_id}, f"expected all non-ready frames on {chat_id}; got {chat_ids}"
+    chat_ids = {
+        f.get("chat_id") for f in frames if "chat_id" in f and f.get("event") != "ready"
+    }
+    assert chat_ids == {
+        chat_id
+    }, f"expected all non-ready frames on {chat_id}; got {chat_ids}"
 
 
-# ---------------------------------------------------------------------------
-# Scenario C — long response → ≥3 tts_chunks
-# ---------------------------------------------------------------------------
+# ── Scenario C — long response → ≥3 tts_chunks ───────────────────────────────
 
 
 async def test_c_long_response_yields_multiple_tts_chunks(gateway, live_client) -> None:
@@ -149,9 +148,7 @@ async def test_c_long_response_yields_multiple_tts_chunks(gateway, live_client) 
         expected += 1
 
 
-# ---------------------------------------------------------------------------
-# Scenario D — emotion emoji stripped in delta, preserved in tts_chunk
-# ---------------------------------------------------------------------------
+# ── Scenario D — emotion emoji stripped in delta, preserved in tts_chunk ─────
 
 
 async def test_d_emotion_emoji_round_trip(gateway, live_client) -> None:
@@ -162,13 +159,23 @@ async def test_d_emotion_emoji_round_trip(gateway, live_client) -> None:
     # short prompts but we tolerate variation.
     await run_turn_and_drain(
         client,
-        {"type": "new_chat", "content": "한 문장으로 기쁘게 인사해줘 (😊 이모지 포함).", "tts_enabled": True},
+        {
+            "type": "new_chat",
+            "content": "한 문장으로 기쁘게 인사해줘 (😊 이모지 포함).",
+            "tts_enabled": True,
+        },
         stream_end_timeout=45.0,
     )
 
-    delta_text = "".join(f.get("text", "") for f in client.frames if f.get("event") == "delta")
-    tts_texts = [f.get("text", "") for f in client.frames if f.get("event") == "tts_chunk"]
-    emotions = [f.get("emotion") for f in client.frames if f.get("event") == "tts_chunk"]
+    delta_text = "".join(
+        f.get("text", "") for f in client.frames if f.get("event") == "delta"
+    )
+    tts_texts = [
+        f.get("text", "") for f in client.frames if f.get("event") == "tts_chunk"
+    ]
+    emotions = [
+        f.get("emotion") for f in client.frames if f.get("event") == "tts_chunk"
+    ]
 
     # The LLM may or may not include the emoji on any given run — we only
     # assert the invariant WHEN an emoji shows up in TTS text.
@@ -179,13 +186,13 @@ async def test_d_emotion_emoji_round_trip(gateway, live_client) -> None:
         )
         assert "😊" in emotions, f"emotion tag should be set; got emotions={emotions}"
     else:
-        pytest.skip("Model did not emit the requested emoji on this run — "
-                    "scenario D invariant not testable; rerun.")
+        pytest.skip(
+            "Model did not emit the requested emoji on this run — "
+            "scenario D invariant not testable; rerun."
+        )
 
 
-# ---------------------------------------------------------------------------
-# Scenario E — parallel chats isolated
-# ---------------------------------------------------------------------------
+# ── Scenario E — parallel chats isolated ─────────────────────────────────────
 
 
 async def test_e_parallel_chats_are_isolated(gateway, live_client) -> None:
@@ -196,16 +203,28 @@ async def test_e_parallel_chats_are_isolated(gateway, live_client) -> None:
 
     # Fire both turns concurrently; each must only receive its own frames.
     await asyncio.gather(
-        client_a.send_json({"type": "new_chat", "content": "ping A", "tts_enabled": False}),
-        client_b.send_json({"type": "new_chat", "content": "ping B", "tts_enabled": False}),
+        client_a.send_json(
+            {"type": "new_chat", "content": "ping A", "tts_enabled": False}
+        ),
+        client_b.send_json(
+            {"type": "new_chat", "content": "ping B", "tts_enabled": False}
+        ),
     )
     await asyncio.gather(
         client_a.wait_for_event("stream_end", timeout=45.0),
         client_b.wait_for_event("stream_end", timeout=45.0),
     )
 
-    a_ids = {f.get("chat_id") for f in client_a.frames if "chat_id" in f and f.get("event") != "ready"}
-    b_ids = {f.get("chat_id") for f in client_b.frames if "chat_id" in f and f.get("event") != "ready"}
+    a_ids = {
+        f.get("chat_id")
+        for f in client_a.frames
+        if "chat_id" in f and f.get("event") != "ready"
+    }
+    b_ids = {
+        f.get("chat_id")
+        for f in client_b.frames
+        if "chat_id" in f and f.get("event") != "ready"
+    }
 
     # Each client sees exactly one chat_id (its own assigned one) and
     # they must differ.
@@ -214,9 +233,7 @@ async def test_e_parallel_chats_are_isolated(gateway, live_client) -> None:
     assert a_ids != b_ids, f"clients share chat_id {a_ids}; cross-talk"
 
 
-# ---------------------------------------------------------------------------
-# Scenario F — reconnect after WS close: same chat_id → history preserved
-# ---------------------------------------------------------------------------
+# ── Scenario F — reconnect after WS close: same chat_id → history preserved ──
 
 
 async def test_f_reconnect_preserves_session_history(gateway, live_client) -> None:
@@ -288,20 +305,20 @@ async def test_f_reconnect_preserves_session_history(gateway, live_client) -> No
 
     # Both connections must have seen frames only for this chat_id.
     a_ids = {
-        f.get("chat_id") for f in client_a.frames
+        f.get("chat_id")
+        for f in client_a.frames
         if "chat_id" in f and f.get("event") != "ready"
     }
     b_ids = {
-        f.get("chat_id") for f in client_b.frames
+        f.get("chat_id")
+        for f in client_b.frames
         if "chat_id" in f and f.get("event") != "ready"
     }
     assert a_ids == {chat_id}, a_ids
     assert b_ids == {chat_id}, b_ids
 
 
-# ---------------------------------------------------------------------------
-# Scenario G — URL ?tts=0 disables TTS entirely
-# ---------------------------------------------------------------------------
+# ── Scenario G — URL ?tts=0 disables TTS entirely ────────────────────────────
 
 
 async def test_g_url_tts_zero_skips_synth_and_frame(gateway, live_client) -> None:
@@ -326,9 +343,7 @@ async def test_g_url_tts_zero_skips_synth_and_frame(gateway, live_client) -> Non
     )
 
 
-# ---------------------------------------------------------------------------
-# Scenario H — inbound tts_enabled: false
-# ---------------------------------------------------------------------------
+# ── Scenario H — inbound tts_enabled: false ──────────────────────────────────
 
 
 async def test_h_inbound_tts_enabled_false(gateway, live_client) -> None:
@@ -352,9 +367,7 @@ async def test_h_inbound_tts_enabled_false(gateway, live_client) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Scenario I — image intake (issue #8)
-# ---------------------------------------------------------------------------
+# ── Scenario I — image intake (issue #8) ─────────────────────────────────────
 
 
 # 1x1 transparent PNG, inline so the suite has no fixture file dependency.
@@ -365,7 +378,9 @@ _TINY_PNG_DATA_URL = (
 )
 
 
-async def test_i_inbound_image_reaches_multimodal_pipeline(gateway, live_client) -> None:
+async def test_i_inbound_image_reaches_multimodal_pipeline(
+    gateway, live_client
+) -> None:
     """Smoke: FE sends a ``data:image/png`` URL; gateway writes it to the
     desktop_mate media dir and the agent loop drives a normal turn to
     completion (stream_start → delta → stream_end).
