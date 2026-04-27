@@ -4,6 +4,7 @@ Fires on `before_iteration` at the start of each user turn (iteration==0),
 searches mem0 with the latest user utterance, and appends a summary block to
 the first system message so the LLM can ground the reply in persisted facts.
 """
+
 from typing import Any, Protocol
 
 from loguru import logger
@@ -92,7 +93,9 @@ class LTMInjectionHook(AgentHook):
 
         block = _format_memories(results)
         _append_to_system_message(context.messages, block)
-        logger.info("LTM injection: {} memories for user={}", len(results), self._user_id)
+        logger.info(
+            "LTM injection: {} memories for user={}", len(results), self._user_id
+        )
 
 
 def _already_injected(messages: list[dict[str, Any]]) -> bool:

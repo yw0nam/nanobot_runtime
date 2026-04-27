@@ -43,7 +43,9 @@ class Preprocessor:
     """Clean TTS-bound sentence text and extract first known emotion emoji."""
 
     def __init__(self, known_emojis: frozenset[str] | None = None) -> None:
-        self.known_emojis = known_emojis if known_emojis is not None else _DEFAULT_EMOJI_SET
+        self.known_emojis = (
+            known_emojis if known_emojis is not None else _DEFAULT_EMOJI_SET
+        )
         self._cleanup_patterns: list[re.Pattern[str]] = [
             re.compile(r"\*[^*]*\*"),
             re.compile(r"\[[^\]]*\]"),

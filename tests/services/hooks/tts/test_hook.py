@@ -2,7 +2,6 @@
 boundaries, synthesizes audio per boundary, emits tts_chunk events via an
 injected sink, and on stream_end blocks until all in-flight syntheses
 complete (TTS Barrier semantic)."""
-from __future__ import annotations
 
 import asyncio
 from typing import Any
@@ -13,9 +12,7 @@ from nanobot.agent.hook import AgentHookContext
 from nanobot_runtime.services.hooks.tts import TTSChunk, TTSHook, TTSSink
 
 
-# --------------------------------------------------------------------------
-# Fakes
-# --------------------------------------------------------------------------
+# ── Fakes ─────────────────────────────────────────────────────────────────────
 
 
 class _FakeChunker:
@@ -76,7 +73,9 @@ class _FakeSynthesizer:
         self._latency = latency
         self._fail_on = fail_on or set()
 
-    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
+    async def synthesize(
+        self, text: str, *, reference_id: str | None = None
+    ) -> str | None:
         if self._latency:
             await asyncio.sleep(self._latency)
         self.calls.append(text)
@@ -137,14 +136,10 @@ def _make_hook(
 
 
 def _ctx(iteration: int = 0, session_key: str = "test-session") -> AgentHookContext:
-    return AgentHookContext(
-        iteration=iteration, messages=[], session_key=session_key
-    )
+    return AgentHookContext(iteration=iteration, messages=[], session_key=session_key)
 
 
-# --------------------------------------------------------------------------
-# Tests
-# --------------------------------------------------------------------------
+# ── Tests ─────────────────────────────────────────────────────────────────────
 
 
 async def test_wants_streaming_is_true() -> None:
@@ -303,16 +298,16 @@ async def test_sequence_resets_per_hook_instance_across_turns() -> None:
     await hook.on_stream(ctx2, "Turn two. Done.")
     await hook.on_stream_end(ctx2, resuming=False)
 
-    first_turn = [c for c in sink.chunks if "Turn one" in c.text or c.text == "Done."][:2]
+    first_turn = [c for c in sink.chunks if "Turn one" in c.text or c.text == "Done."][
+        :2
+    ]
     second_turn_chunks = sink.chunks[len(first_turn) :]
 
     # Second turn's sequence starts at 0 again
     assert second_turn_chunks[0].sequence == 0
 
 
-# --------------------------------------------------------------------------
-# TTSSink.is_enabled — synthesis-skip path
-# --------------------------------------------------------------------------
+# ── TTSSink.is_enabled — synthesis-skip path ──────────────────────────────────
 
 
 class _FakeSinkWithEnableFlag(TTSSink):
@@ -349,7 +344,9 @@ async def test_is_enabled_false_skips_synthesis_entirely() -> None:
     await hook.on_stream(ctx, "Hello there.")
     await hook.on_stream_end(ctx, resuming=False)
 
-    assert synth.calls == [], f"synthesizer must not be called when disabled; got {synth.calls}"
+    assert (
+        synth.calls == []
+    ), f"synthesizer must not be called when disabled; got {synth.calls}"
     assert sink.chunks == [], f"no chunk should have been emitted; got {sink.chunks}"
 
 
@@ -371,9 +368,7 @@ async def test_is_enabled_true_keeps_default_behaviour() -> None:
     assert len(sink.chunks) == 1
 
 
-# --------------------------------------------------------------------------
-# reference_id resolver
-# --------------------------------------------------------------------------
+# ── reference_id resolver ─────────────────────────────────────────────────────
 
 
 async def test_reference_id_resolver_passes_voice_to_synthesizer() -> None:
@@ -455,7 +450,7 @@ async def test_no_resolver_passes_none_to_synthesize() -> None:
     assert synth.ref_calls == [None]
 
 
-# ── session_key plumbing into sink.is_enabled ─────────────────────────
+# ── session_key plumbing into sink.is_enabled ─────────────────────────────────
 
 
 async def test_dispatch_sentence_passes_session_key_to_is_enabled() -> None:
@@ -482,7 +477,9 @@ async def test_dispatch_sentence_passes_session_key_to_is_enabled() -> None:
     assert sink.is_enabled_calls == ["slack:C123:T456", "slack:C123:T456"]
 
 
-async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump() -> None:
+async def test_disabled_sink_skips_dispatch_no_synth_no_chunk_no_sequence_bump() -> (
+    None
+):
     """When the sink reports disabled at dispatch time, the hook must
     skip synthesis entirely: no synth call, no emitted chunk, and the
     per-session sequence counter must not advance (so the next enabled
@@ -516,6 +513,7 @@ async def test_second_chance_check_skips_synth_when_sink_flips_after_dispatch() 
     synthesis entirely. Defends the line in `_synth_and_emit` that exists
     purely for this race.
     """
+
     class _FlipAfterDispatchSink(TTSSink):
         def __init__(self) -> None:
             self.chunks: list[TTSChunk] = []
@@ -558,6 +556,7 @@ def test_abc_rejects_sink_missing_required_methods() -> None:
     `is_enabled` and the hook would `AttributeError` at the dispatch
     hot path instead of failing loud at boot.
     """
+
     class _MissingIsEnabled(TTSSink):
         async def send_tts_chunk(self, chunk: TTSChunk) -> None:
             pass

@@ -7,10 +7,10 @@ threshold, active-turn, cooldown, re-validation race) and the composite
 on_job wrapper used to install the system job without clobbering any
 existing cron callback.
 """
+
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -53,7 +53,11 @@ def _iso_ago(now: datetime, seconds: int) -> str:
 
 
 def _session_info(key: str, now: datetime, age_s: int) -> dict:
-    return {"key": key, "updated_at": _iso_ago(now, age_s), "created_at": _iso_ago(now, age_s + 10)}
+    return {
+        "key": key,
+        "updated_at": _iso_ago(now, age_s),
+        "created_at": _iso_ago(now, age_s + 10),
+    }
 
 
 def _fake_session(updated_at: datetime) -> SimpleNamespace:
@@ -70,13 +74,17 @@ def _build_agent(locks: dict | None = None) -> MagicMock:
     return agent
 
 
-def _build_sessions(list_result: list[dict], fresh_by_key: dict | None = None) -> MagicMock:
+def _build_sessions(
+    list_result: list[dict], fresh_by_key: dict | None = None
+) -> MagicMock:
     sessions = MagicMock()
     sessions.list_sessions.return_value = list_result
     fresh_by_key = fresh_by_key or {}
 
     def _get_or_create(key: str):
-        return fresh_by_key.get(key) or _fake_session(datetime.fromisoformat(list_result[0]["updated_at"]))
+        return fresh_by_key.get(key) or _fake_session(
+            datetime.fromisoformat(list_result[0]["updated_at"])
+        )
 
     sessions.get_or_create.side_effect = _get_or_create
     return sessions
@@ -92,7 +100,9 @@ async def test_in_quiet_hours_suppresses_nudge() -> None:
     agent = _build_agent()
     sessions = _build_sessions([_session_info("desktop_mate:abc", now, age_s=3600)])
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_not_called()
@@ -102,17 +112,29 @@ async def test_quiet_hours_spanning_midnight() -> None:
     """22:00-06:00 should treat 03:00 as quiet and 08:00 as non-quiet."""
     config = _cfg(quiet_hours=QuietHours(start="22:00", end="06:00"))
     agent = _build_agent()
-    sessions = _build_sessions([_session_info("desktop_mate:abc", datetime(2026, 4, 22, 3, 0, tzinfo=_TZ), age_s=3600)])
+    sessions = _build_sessions(
+        [
+            _session_info(
+                "desktop_mate:abc", datetime(2026, 4, 22, 3, 0, tzinfo=_TZ), age_s=3600
+            )
+        ]
+    )
 
     quiet_now = datetime(2026, 4, 22, 3, 0, tzinfo=_TZ)
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: quiet_now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: quiet_now
+    )
     await scanner.scan_and_nudge()
     agent.bus.publish_inbound.assert_not_called()
 
     # Same session but now 08:00 — quiet hours over.
     wake_now = datetime(2026, 4, 22, 8, 0, tzinfo=_TZ)
-    sessions = _build_sessions([_session_info("desktop_mate:abc", wake_now, age_s=3600)])
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: wake_now)
+    sessions = _build_sessions(
+        [_session_info("desktop_mate:abc", wake_now, age_s=3600)]
+    )
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: wake_now
+    )
     await scanner.scan_and_nudge()
     agent.bus.publish_inbound.assert_awaited_once()
 
@@ -124,7 +146,9 @@ async def test_idle_below_threshold_skipped() -> None:
     # Last message 60s ago — below 300s threshold.
     sessions = _build_sessions([_session_info("desktop_mate:abc", now, age_s=60)])
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_not_called()
@@ -139,7 +163,9 @@ async def test_active_turn_skipped() -> None:
         agent = _build_agent(locks={"desktop_mate:abc": locked})
         sessions = _build_sessions([_session_info("desktop_mate:abc", now, age_s=3600)])
 
-        scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now)
+        scanner = IdleScanner(
+            agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now
+        )
         await scanner.scan_and_nudge()
 
         agent.bus.publish_inbound.assert_not_called()
@@ -158,14 +184,20 @@ async def test_cooldown_blocks_second_nudge() -> None:
         fresh_by_key={"desktop_mate:abc": fresh},
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
     assert agent.bus.publish_inbound.await_count == 1
 
     # 5 minutes later — still within cooldown; idle threshold still satisfied.
     later = now + timedelta(seconds=300)
-    sessions.list_sessions.return_value = [_session_info("desktop_mate:abc", later, age_s=3900)]
-    sessions.get_or_create.side_effect = lambda _k: _fake_session(later - timedelta(seconds=3900))
+    sessions.list_sessions.return_value = [
+        _session_info("desktop_mate:abc", later, age_s=3900)
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(
+        later - timedelta(seconds=3900)
+    )
     scanner._clock = lambda: later
     await scanner.scan_and_nudge()
     assert agent.bus.publish_inbound.await_count == 1  # unchanged due to cooldown
@@ -180,14 +212,20 @@ async def test_cooldown_expired_allows_second_nudge() -> None:
         fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=3600))},
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
     assert agent.bus.publish_inbound.await_count == 1
 
     # 16 minutes later — cooldown window past, session still idle.
     later = now + timedelta(seconds=16 * 60)
-    sessions.list_sessions.return_value = [_session_info("desktop_mate:abc", later, age_s=3600 + 16 * 60)]
-    sessions.get_or_create.side_effect = lambda _k: _fake_session(later - timedelta(seconds=3600 + 16 * 60))
+    sessions.list_sessions.return_value = [
+        _session_info("desktop_mate:abc", later, age_s=3600 + 16 * 60)
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(
+        later - timedelta(seconds=3600 + 16 * 60)
+    )
     scanner._clock = lambda: later
     await scanner.scan_and_nudge()
     assert agent.bus.publish_inbound.await_count == 2  # cooldown expired
@@ -200,7 +238,9 @@ async def test_channel_not_in_allowlist_skipped() -> None:
     agent = _build_agent()
     sessions = _build_sessions([_session_info("slack:C012:1234", now, age_s=3600)])
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_not_called()
@@ -210,12 +250,16 @@ async def test_session_key_without_colon_skipped() -> None:
     """Malformed keys (e.g. 'cli', 'heartbeat') are not routable — skip safely."""
     now = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
     agent = _build_agent()
-    sessions = _build_sessions([
-        _session_info("heartbeat", now, age_s=3600),
-        _session_info("cli", now, age_s=3600),
-    ])
+    sessions = _build_sessions(
+        [
+            _session_info("heartbeat", now, age_s=3600),
+            _session_info("cli", now, age_s=3600),
+        ]
+    )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_not_called()
@@ -231,7 +275,9 @@ async def test_revalidation_race_skipped() -> None:
         fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=10))},
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_not_called()
@@ -243,10 +289,14 @@ async def test_all_gates_pass_publishes_inbound_with_correct_target() -> None:
     agent = _build_agent()
     sessions = _build_sessions(
         [_session_info("desktop_mate:chat-abc", now, age_s=600)],
-        fresh_by_key={"desktop_mate:chat-abc": _fake_session(now - timedelta(seconds=600))},
+        fresh_by_key={
+            "desktop_mate:chat-abc": _fake_session(now - timedelta(seconds=600))
+        },
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=config, clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=config, clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_awaited_once()
@@ -267,7 +317,9 @@ async def test_publish_inbound_exception_swallowed_and_cooldown_preserved() -> N
         fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=3600))},
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(cooldown_s=900), clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(cooldown_s=900), clock=lambda: now
+    )
     await scanner.scan_and_nudge()  # must not raise
 
     # Second tick in same minute — cooldown still marked so no retry storm.
@@ -320,7 +372,9 @@ async def test_install_disabled_config_is_noop() -> None:
     sentinel = AsyncMock()
     cron.on_job = sentinel
 
-    install_idle_system_job(agent=agent, sessions=sessions, cron=cron, config=_cfg(enabled=False))
+    install_idle_system_job(
+        agent=agent, sessions=sessions, cron=cron, config=_cfg(enabled=False)
+    )
 
     cron.register_system_job.assert_not_called()
     assert cron.on_job is sentinel  # untouched
@@ -387,9 +441,9 @@ async def test_only_most_recent_session_nudged_when_multiple_idle() -> None:
     agent = _build_agent()
     sessions = _build_sessions(
         [
-            _session_info("desktop_mate:older", now, age_s=7200),    # 2h idle
-            _session_info("desktop_mate:recent", now, age_s=600),    # 10m idle (winner)
-            _session_info("desktop_mate:middling", now, age_s=3600), # 1h idle
+            _session_info("desktop_mate:older", now, age_s=7200),  # 2h idle
+            _session_info("desktop_mate:recent", now, age_s=600),  # 10m idle (winner)
+            _session_info("desktop_mate:middling", now, age_s=3600),  # 1h idle
         ],
         fresh_by_key={
             "desktop_mate:older": _fake_session(now - timedelta(seconds=7200)),
@@ -398,7 +452,9 @@ async def test_only_most_recent_session_nudged_when_multiple_idle() -> None:
         },
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_awaited_once()
@@ -415,27 +471,42 @@ async def test_startup_grace_suppresses_nudge_then_releases() -> None:
     """
     boot = datetime(2026, 4, 22, 14, 0, tzinfo=_TZ)
     cursor = {"now": boot}
-    clock = lambda: cursor["now"]
+
+    def clock():
+        return cursor["now"]
+
     agent = _build_agent()
     sessions = _build_sessions(
         [_session_info("desktop_mate:abc", boot, age_s=3600)],
-        fresh_by_key={"desktop_mate:abc": _fake_session(boot - timedelta(seconds=3600))},
+        fresh_by_key={
+            "desktop_mate:abc": _fake_session(boot - timedelta(seconds=3600))
+        },
     )
 
     # _started_at captured at __init__ via clock()
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(startup_grace_s=120), clock=clock)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(startup_grace_s=120), clock=clock
+    )
 
     # Tick 30s after boot — within grace, must skip.
     cursor["now"] = boot + timedelta(seconds=30)
-    sessions.list_sessions.return_value = [_session_info("desktop_mate:abc", cursor["now"], age_s=3630)]
-    sessions.get_or_create.side_effect = lambda _k: _fake_session(cursor["now"] - timedelta(seconds=3630))
+    sessions.list_sessions.return_value = [
+        _session_info("desktop_mate:abc", cursor["now"], age_s=3630)
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(
+        cursor["now"] - timedelta(seconds=3630)
+    )
     await scanner.scan_and_nudge()
     agent.bus.publish_inbound.assert_not_called()
 
     # Tick 121s after boot — grace expired, idle gates pass, must dispatch.
     cursor["now"] = boot + timedelta(seconds=121)
-    sessions.list_sessions.return_value = [_session_info("desktop_mate:abc", cursor["now"], age_s=3721)]
-    sessions.get_or_create.side_effect = lambda _k: _fake_session(cursor["now"] - timedelta(seconds=3721))
+    sessions.list_sessions.return_value = [
+        _session_info("desktop_mate:abc", cursor["now"], age_s=3721)
+    ]
+    sessions.get_or_create.side_effect = lambda _k: _fake_session(
+        cursor["now"] - timedelta(seconds=3721)
+    )
     await scanner.scan_and_nudge()
     agent.bus.publish_inbound.assert_awaited_once()
 
@@ -455,7 +526,9 @@ async def test_published_inbound_carries_proactive_and_wants_stream() -> None:
         fresh_by_key={"desktop_mate:abc": _fake_session(now - timedelta(seconds=600))},
     )
 
-    scanner = IdleScanner(agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now)
+    scanner = IdleScanner(
+        agent=agent, sessions=sessions, config=_cfg(), clock=lambda: now
+    )
     await scanner.scan_and_nudge()
 
     agent.bus.publish_inbound.assert_awaited_once()
@@ -481,7 +554,9 @@ async def test_asyncio_install_disabled_is_noop() -> None:
     agent = SimpleNamespace(_session_locks={}, bus=MagicMock())
     sessions = _build_sessions([])
 
-    result = install_idle_asyncio_task(agent=agent, sessions=sessions, config=_cfg(enabled=False))
+    result = install_idle_asyncio_task(
+        agent=agent, sessions=sessions, config=_cfg(enabled=False)
+    )
 
     assert result is None
     assert not hasattr(agent, IDLE_ASYNCIO_TASK_ATTR)

@@ -8,6 +8,7 @@ State from ``DesktopMateChannel.__init__``: ``config``, ``_stop_event``,
 ``_send_ready``, ``_decode_inbound_images``, ``_attach``, ``_send_frame``,
 ``_detach_connection``, ``_handle_message``, and ``is_allowed``.
 """
+
 import asyncio
 import uuid
 from pathlib import Path
@@ -43,15 +44,17 @@ class _DesktopMateServerMixin:
                 try:
                     raw = raw.decode("utf-8")
                 except UnicodeDecodeError:
-                    logger.warning("desktop_mate: non-utf8 binary frame, ignored")
+                    logger.opt(exception=True).warning(
+                        "desktop_mate: non-utf8 binary frame, ignored"
+                    )
                     continue
 
             try:
                 envelope = parse_inbound(raw)
-            except (ValidationError, ValueError) as e:
-                logger.warning(
-                    "desktop_mate: bad inbound frame, ignored: {} ({!r})",
-                    e, raw[:100],
+            except (ValidationError, ValueError):
+                logger.opt(exception=True).warning(
+                    "desktop_mate: bad inbound frame, ignored ({!r})",
+                    raw[:100],
                 )
                 continue
 
@@ -68,7 +71,8 @@ class _DesktopMateServerMixin:
                 chat_id = envelope.chat_id
 
             media_paths, reject_reason = self._decode_inbound_images(  # type: ignore[attr-defined]
-                envelope.images, sender_id=sender_id,
+                envelope.images,
+                sender_id=sender_id,
             )
             if reject_reason is not None:
                 # new_chat rejections have no chat_id yet; FE correlates via reference_id.
@@ -106,10 +110,10 @@ class _DesktopMateServerMixin:
                 for p in media_paths:
                     try:
                         Path(p).unlink(missing_ok=True)
-                    except OSError as unlink_exc:
-                        logger.warning(
-                            "desktop_mate: leaked media {} (unlink after failure): {}",
-                            p, unlink_exc,
+                    except OSError:
+                        logger.opt(exception=True).warning(
+                            "desktop_mate: leaked media {} (unlink after failure)",
+                            p,
                         )
 
     # ── Server Lifecycle ──────────────────────────────────────────────────
@@ -137,7 +141,9 @@ class _DesktopMateServerMixin:
                 try:
                     await connection.close(code=4003, reason="forbidden")
                 except Exception:
-                    logger.opt(exception=True).warning("desktop_mate: close(4003/forbidden) raised")
+                    logger.opt(exception=True).warning(
+                        "desktop_mate: close(4003/forbidden) raised"
+                    )
                 return
 
             self._apply_connection_tts_override(connection, query)  # type: ignore[attr-defined]
@@ -156,7 +162,9 @@ class _DesktopMateServerMixin:
         config = self.config  # type: ignore[attr-defined]
         logger.info(
             "desktop_mate: listening on ws://{}:{}{}",
-            config.host, config.port, config.path,
+            config.host,
+            config.port,
+            config.path,
         )
 
         async def runner() -> None:
@@ -192,10 +200,14 @@ class _DesktopMateServerMixin:
             try:
                 await asyncio.wait_for(server_task, timeout=2.0)
             except asyncio.TimeoutError:
-                logger.warning("desktop_mate: server task did not stop within 2s, cancelling")
+                logger.opt(exception=True).warning(
+                    "desktop_mate: server task did not stop within 2s, cancelling"
+                )
                 server_task.cancel()
             except Exception:
-                logger.opt(exception=True).warning("desktop_mate: server task ended with error during stop")
+                logger.opt(exception=True).warning(
+                    "desktop_mate: server task ended with error during stop"
+                )
             self._server_task = None  # type: ignore[attr-defined]
         self._chat_conn.clear()  # type: ignore[attr-defined]
         self._streams.clear()  # type: ignore[attr-defined]

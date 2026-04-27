@@ -9,6 +9,7 @@ via the TTS Barrier) still have a chat_id to route to.
 
 Auth: single static token against ``?token=`` in the WS URL.
 """
+
 import asyncio
 import re
 import time
@@ -25,7 +26,10 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 
 from nanobot_runtime.config.desktop_mate import DesktopMateConfig, _coerce_config
-from nanobot_runtime.services.channels.desktop_mate_image import _MAX_IMAGE_BYTES, _decode_images
+from nanobot_runtime.services.channels.desktop_mate_image import (
+    _MAX_IMAGE_BYTES,
+    _decode_images,
+)
 from nanobot_runtime.models.desktop_mate import (
     DeltaFrame,
     ImageRejectReason,
@@ -33,8 +37,13 @@ from nanobot_runtime.models.desktop_mate import (
     StreamEndFrame,
     StreamStartFrame,
 )
-from nanobot_runtime.clients.desktop_mate_rest import dispatch_http, parse_request_path, query_first
-from nanobot_runtime.services.channels.desktop_mate_server import _DesktopMateServerMixin
+from nanobot_runtime.clients.desktop_mate_rest import (
+    dispatch_http,
+    query_first,
+)
+from nanobot_runtime.services.channels.desktop_mate_server import (
+    _DesktopMateServerMixin,
+)
 from nanobot_runtime.services.channels.desktop_mate_tts import _DesktopMateTTSMixin
 from nanobot_runtime.services.hooks.tts import TTSChunk, TTSSink
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
@@ -95,12 +104,15 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         if emotion_emojis is not None:
             self._emotion_emojis: frozenset[str] = frozenset(emotion_emojis)
         elif coerced.emotion_map_path:
-            self._emotion_emojis = EmotionMapper.from_yaml(coerced.emotion_map_path).known_emojis
+            self._emotion_emojis = EmotionMapper.from_yaml(
+                coerced.emotion_map_path
+            ).known_emojis
         else:
             self._emotion_emojis = frozenset()
         self._emotion_strip_re: re.Pattern[str] | None = (
             re.compile("|".join(re.escape(e) for e in self._emotion_emojis))
-            if self._emotion_emojis else None
+            if self._emotion_emojis
+            else None
         )
         self._chat_conn: dict[str, Any] = {}
         self._streams: dict[str, tuple[str, bool]] = {}
@@ -149,6 +161,7 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         if self._media_dir is not None:
             return self._media_dir
         from nanobot.config.paths import get_media_dir
+
         self._media_dir = get_media_dir("desktop_mate")
         return self._media_dir
 
@@ -172,7 +185,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         try:
             await connection.send(raw)
         except Exception:
-            logger.opt(exception=True).warning("desktop_mate: send failed, dropping connection")
+            logger.opt(exception=True).warning(
+                "desktop_mate: send failed, dropping connection"
+            )
             self._detach_connection(connection)
 
     async def _send_ready(self, connection: Any, *, client_id: str) -> str:
@@ -180,7 +195,11 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         connection_id = str(uuid.uuid4())
         await self._send_frame(
             connection,
-            ReadyFrame(connection_id=connection_id, client_id=client_id, server_time=time.time()),
+            ReadyFrame(
+                connection_id=connection_id,
+                client_id=client_id,
+                server_time=time.time(),
+            ),
         )
         return connection_id
 
@@ -200,7 +219,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             if stream_id:
                 self._streams[stream_id] = (msg.chat_id, bool(proactive_flag))
                 self._current_stream_id = stream_id
-            await self._send_frame(conn, StreamStartFrame(chat_id=msg.chat_id, proactive=proactive_flag))
+            await self._send_frame(
+                conn, StreamStartFrame(chat_id=msg.chat_id, proactive=proactive_flag)
+            )
             return
 
         # Nanobot calls send() once per agent iteration, not just at the
@@ -221,7 +242,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
                     "desktop_mate: send() with neither _stream_end nor tool "
                     "metadata (chat_id={}, content_len={}) — possible nanobot "
                     "shape change; FE may hang. meta_keys={}",
-                    msg.chat_id, len(msg.content or ""), list(meta.keys()),
+                    msg.chat_id,
+                    len(msg.content or ""),
+                    list(meta.keys()),
                 )
             return
 
@@ -231,7 +254,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         # or the connection drops.
         await self._send_frame(
             conn,
-            StreamEndFrame(chat_id=msg.chat_id, content=msg.content, proactive=proactive_flag),
+            StreamEndFrame(
+                chat_id=msg.chat_id, content=msg.content, proactive=proactive_flag
+            ),
         )
 
     async def send_delta(
@@ -242,7 +267,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
     ) -> None:
         conn = self._chat_conn.get(chat_id)
         if conn is None:
-            logger.warning("desktop_mate: send_delta: no connection for chat_id={}", chat_id)
+            logger.warning(
+                "desktop_mate: send_delta: no connection for chat_id={}", chat_id
+            )
             return
 
         meta = metadata or {}
@@ -276,12 +303,16 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
         if bool(stream_id) and stream_id not in self._streams:
             self._streams[stream_id] = (chat_id, bool(proactive_flag))
             self._current_stream_id = stream_id
-            await self._send_frame(conn, StreamStartFrame(chat_id=chat_id, proactive=proactive_flag))
+            await self._send_frame(
+                conn, StreamStartFrame(chat_id=chat_id, proactive=proactive_flag)
+            )
 
         if meta.get("_stream_end"):
             await self._send_frame(
                 conn,
-                StreamEndFrame(chat_id=chat_id, content=delta, proactive=proactive_flag),
+                StreamEndFrame(
+                    chat_id=chat_id, content=delta, proactive=proactive_flag
+                ),
             )
             return
 
@@ -298,7 +329,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
     # ── REST Surface ──────────────────────────────────────────────────────
 
     async def _dispatch_http(self, connection: Any, request: WsRequest) -> Any:
-        return dispatch_http(self.config.token, self._session_manager, self.config.path, request)
+        return dispatch_http(
+            self.config.token, self._session_manager, self.config.path, request
+        )
 
     # ── Auth / Handshake ──────────────────────────────────────────────────
 
@@ -314,7 +347,9 @@ class DesktopMateChannel(_DesktopMateTTSMixin, _DesktopMateServerMixin, BaseChan
             try:
                 await connection.close(code=4003, reason="invalid token")
             except Exception:
-                logger.opt(exception=True).warning("desktop_mate: close after bad token raised")
+                logger.opt(exception=True).warning(
+                    "desktop_mate: close after bad token raised"
+                )
             return False
         return True
 
@@ -375,7 +410,7 @@ class LazyChannelTTSSink(TTSSink):
             # time. Warn once per process so a "TTS missing on first message
             # after restart" doesn't look identical to a config bug.
             if not self._race_tolerance_warned:
-                logger.warning(
+                logger.opt(exception=True).warning(
                     "LazyChannelTTSSink.is_enabled: DesktopMateChannel not "
                     "registered yet (session_key={}); allowing dispatch on "
                     "the assumption it will register before delivery.",
@@ -389,7 +424,7 @@ class LazyChannelTTSSink(TTSSink):
             channel = get_desktop_mate_channel()
         except RuntimeError:
             if not self._dropped_chunk_warned:
-                logger.warning(
+                logger.opt(exception=True).warning(
                     "LazyChannelTTSSink.send_tts_chunk: dropping TTSChunk "
                     "seq={} — DesktopMateChannel still not registered.",
                     chunk.sequence,

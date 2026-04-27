@@ -18,6 +18,7 @@ Dispatch path: scanner publishes a synthesized ``InboundMessage`` with
 OutboundMessage — identical to a real user message, so DesktopMateChannel
 streaming and TTS chunk routing work without proactive-specific glue.
 """
+
 from datetime import datetime
 from typing import Any, Callable, Protocol
 from zoneinfo import ZoneInfo
@@ -86,14 +87,14 @@ class IdleScanner:
         minutes = _minutes_between(fresh_updated, now)
         prompt = self._config.idle_prompt.format(minutes=minutes)
         try:
-            await self._dispatch_nudge(key=key, channel=channel, chat_id=chat_id, prompt=prompt)
+            await self._dispatch_nudge(
+                key=key, channel=channel, chat_id=chat_id, prompt=prompt
+            )
             logger.info("Idle nudge dispatched: session={} idle={}m", key, minutes)
         except Exception:
             logger.exception("Idle nudge failed for {}", key)
 
-    def _select_target(
-        self, now: datetime
-    ) -> tuple[str, str, str, datetime] | None:
+    def _select_target(self, now: datetime) -> tuple[str, str, str, datetime] | None:
         """Pick the most-recently-updated allowlisted session that passes every gate.
 
         Returns ``(session_key, channel, chat_id, fresh_updated_at)`` or ``None``.

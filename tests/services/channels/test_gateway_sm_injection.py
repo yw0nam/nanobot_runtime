@@ -7,13 +7,12 @@ declares the kwarg — including ``desktop_mate``. This test verifies the
 patch actually takes effect by constructing a ``ChannelManager`` with a
 fake session manager and confirming the channel received it.
 """
+
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
 
 from nanobot_runtime.services.channels.desktop_mate import DesktopMateChannel
 from nanobot_runtime.gateway import _install_channel_manager_patch
@@ -63,9 +62,9 @@ def test_gateway_patch_injects_session_manager_into_desktop_mate():
     mgr = ChannelManager(config, _FakeBus(), session_manager=fake_sm)
 
     channel = mgr.channels.get("desktop_mate")
-    assert isinstance(channel, DesktopMateChannel), (
-        "desktop_mate channel did not initialise; patch may have regressed"
-    )
-    assert channel._session_manager is fake_sm, (
-        "gateway patch failed to inject session_manager into DesktopMateChannel"
-    )
+    assert isinstance(
+        channel, DesktopMateChannel
+    ), "desktop_mate channel did not initialise; patch may have regressed"
+    assert (
+        channel._session_manager is fake_sm
+    ), "gateway patch failed to inject session_manager into DesktopMateChannel"

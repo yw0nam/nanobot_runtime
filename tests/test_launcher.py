@@ -6,6 +6,7 @@ cover the pure-logic env-var parsing in ``_build_idle_config`` and
 strings, comma-list edge cases) and would otherwise only surface as
 mis-scheduled crons or missing TTS rules at startup.
 """
+
 import os
 
 import pytest
@@ -75,7 +76,8 @@ def test_idle_config_int_envvar_typo_surfaces_as_value_error(
 
 
 def test_tts_rules_path_defaults_to_cwd_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     expected = str(tmp_path / "resources" / "tts_rules.yml")
@@ -96,12 +98,14 @@ class TestResolveTtsModesPath:
     ):
         monkeypatch.chdir(tmp_path)
         from nanobot_runtime.launcher import _resolve_tts_modes_path
+
         expected = str(tmp_path / "resources" / "tts_channel_modes.yml")
         assert _resolve_tts_modes_path() == expected
 
     def test_modes_path_env_override_wins(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("TTS_MODES_PATH", "/tmp/custom_modes.yml")
         from nanobot_runtime.launcher import _resolve_tts_modes_path
+
         assert _resolve_tts_modes_path() == "/tmp/custom_modes.yml"
 
 
@@ -120,6 +124,7 @@ class TestBuildTtsHookFailsWhenModesMissing:
         monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing.yml"))
 
         from nanobot_runtime.launcher import _build_tts_hook
+
         with pytest.raises(FileNotFoundError) as ei:
             _build_tts_hook()
         msg = str(ei.value)
@@ -138,6 +143,7 @@ class TestBuildTtsHookFailsWhenModesMissing:
         monkeypatch.setenv("TTS_MODES_PATH", str(tmp_path / "missing_modes.yml"))
 
         from nanobot_runtime.launcher import _build_tts_hook
+
         with pytest.raises(FileNotFoundError) as ei:
             _build_tts_hook()
         msg = str(ei.value)
@@ -172,6 +178,7 @@ class TestBuildTtsHookFailsWhenModesMissing:
 
         from unittest.mock import MagicMock
         from nanobot_runtime.launcher import _hooks_factory
+
         loop = MagicMock()
         loop.cron_service = None  # not consulted because IDLE is off
 

@@ -1,6 +1,7 @@
 """Tests for Preprocessor — strip stage directions / meta brackets,
 normalize whitespace, and extract first known emotion emoji as tag.
 """
+
 from __future__ import annotations
 
 from nanobot_runtime.services.tts.preprocessor import Preprocessor

@@ -10,9 +10,9 @@ This gives deterministic, in-process regression coverage of the wire
 contract without depending on a running gateway or live LLM/TTS
 backends. See :mod:`tests.regression.test_scenarios` for the scenarios.
 """
+
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -77,7 +77,9 @@ class RecordingSynthesizer:
         self.calls: list[str] = []
         self.ref_calls: list[str | None] = []
 
-    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
+    async def synthesize(
+        self, text: str, *, reference_id: str | None = None
+    ) -> str | None:
         self.calls.append(text)
         self.ref_calls.append(reference_id)
         # Short, fixed base64 so tests can assert the FULL tts_chunk

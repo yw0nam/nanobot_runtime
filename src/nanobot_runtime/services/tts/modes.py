@@ -17,6 +17,7 @@ Channels not listed default to the value of ``default:`` (which itself
 defaults to ``none`` if absent). Unknown mode strings raise ``ValueError``
 at boot so an operator typo fails loud.
 """
+
 from enum import Enum
 from pathlib import Path
 
@@ -129,10 +130,6 @@ def load_channel_modes(path: str | Path) -> ChannelModeMap:
             "delivery pipeline is implemented yet — those channels will "
             "receive no audio (silently equivalent to NONE).",
             p,
-            (
-                f"channels {attachment_channels}"
-                if attachment_channels
-                else "default"
-            ),
+            (f"channels {attachment_channels}" if attachment_channels else "default"),
         )
     return result

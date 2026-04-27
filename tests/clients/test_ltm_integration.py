@@ -3,6 +3,7 @@
 Requires a running ltm-mcp at http://127.0.0.1:7777/mcp/ (see
 agents/mcp_servers/ltm/).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,7 +25,9 @@ async def test_roundtrip_add_search_delete_via_adapter() -> None:
     )
     assert "results" in add, f"add_memory should return results key, got: {add}"
 
-    found = await client.search_memory(query="adapter integration", user_id=user_id, limit=5)
+    found = await client.search_memory(
+        query="adapter integration", user_id=user_id, limit=5
+    )
     assert "results" in found
 
     # Cleanup

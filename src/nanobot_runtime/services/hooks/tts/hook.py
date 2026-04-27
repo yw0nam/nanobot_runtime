@@ -31,96 +31,28 @@ consume a sequence number. When ``session_key`` is ``None``
 (caller didn't supply one — stale nanobot, or a test) the hook falls back
 to a shared ``_default`` state bucket and emits a warning once.
 """
+
 import asyncio
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Callable
 
 from loguru import logger
 from nanobot.agent.hook import AgentHook, AgentHookContext
-from pydantic import BaseModel, ConfigDict, Field
+
+from nanobot_runtime.services.hooks.tts.abc import TTSSink
+from nanobot_runtime.services.hooks.tts.models import TTSChunk
+from nanobot_runtime.services.hooks.tts.protocols import (
+    EmotionMapper,
+    ReferenceIdResolver,
+    SentenceChunker,
+    TextPreprocessor,
+    TTSSynthesizer,
+)
+
+_FALLBACK_SESSION_KEY = "__tts_hook_default__"
 
 
-# ── Data shape emitted to the sink (matches DMP's tts_chunk frame payload)
-
-
-class TTSChunk(BaseModel):
-    """Data emitted to the TTS sink per completed sentence."""
-
-    model_config = ConfigDict(frozen=True)
-
-    sequence: int = Field(description="Zero-based index of this chunk within the current stream.")
-    text: str = Field(description="Cleaned sentence text sent to the TTS engine.")
-    audio_base64: str | None = Field(description="Base64-encoded WAV audio, or None on failure.")
-    emotion: str | None = Field(description="Detected emotion emoji/tag, or None.")
-    keyframes: list[dict[str, Any]] = Field(
-        default_factory=list, description="Animation keyframe dicts for the emotion."
-    )
-
-
-# ── Injected dependencies (Protocols) ────────────────────────────────────
-
-
-class SentenceChunker(Protocol):
-    def feed(self, delta: str) -> list[str]: ...
-    def flush(self) -> str | None: ...
-
-
-class TextPreprocessor(Protocol):
-    def process(self, sentence: str) -> tuple[str, str | None]:
-        """Return (clean_text_for_display, emotion_tag_or_None)."""
-
-
-class EmotionMapper(Protocol):
-    def map(self, emotion: str | None) -> list[dict[str, Any]]: ...
-
-
-class TTSSynthesizer(Protocol):
-    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
-        """Return base64-encoded audio (wav) or None on failure.
-
-        ``reference_id`` is an optional per-call voice override. ``None``
-        means "use the synthesizer's default"; an empty string forces no
-        reference even when the synthesizer has a baked-in default.
-        """
-
-
-# Resolves a session_key (``"desktop_mate:<chat_id>"``-style) to the voice
-# to use for that session, or ``None`` to fall back to the synthesizer's
-# default. The hook calls this *once per sentence dispatch*, so the resolver
-# may consult mutable channel state without stale-cache concerns.
-ReferenceIdResolver = Callable[[str | None], str | None]
-
-
-class TTSSink(ABC):
-    """Contract for downstream consumers of synthesized TTS chunks.
-
-    Promoted from a `Protocol` with an optional `is_enabled` to an ABC so
-    every sink — production (`LazyChannelTTSSink`), regression harness
-    (`DirectSink`), and test fakes — implements the same contract. The
-    hook can then call `self._sink.is_enabled(session_key)` directly,
-    with no `getattr` introspection and no implicit "always enabled"
-    fallback. A sink that forgets either method fails at construction
-    time with a clear `TypeError`, not at the dispatch hot path with an
-    `AttributeError`.
-    """
-
-    @abstractmethod
-    async def send_tts_chunk(self, chunk: TTSChunk) -> None: ...
-
-    @abstractmethod
-    def is_enabled(self, session_key: str | None) -> bool:
-        """Return True iff this sink is willing to deliver audio for the
-        given session. The hook calls this once at dispatch time and once
-        again inside the synth task (second-chance check), both with the
-        same ``state.session_key``. Sinks that don't care about the
-        channel implement this trivially (return True or check internal
-        state). ``session_key`` is required positionally — there is no
-        default; pass ``None`` explicitly when no key is available.
-        """
-
-
-# ── Per-session state ─────────────────────────────────────────────────────
+# ── Per-session state ─────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -133,13 +65,25 @@ class _SessionState:
     session_key: str | None = None
 
 
-_FALLBACK_SESSION_KEY = "__tts_hook_default__"
-
-
-# ── Hook ─────────────────────────────────────────────────────────────────
+# ── Hook ──────────────────────────────────────────────────────────────────────
 
 
 class TTSHook(AgentHook):
+    """nanobot AgentHook that drives the TTS synthesis pipeline.
+
+    Args:
+        chunker_factory: Zero-argument callable returning a fresh SentenceChunker
+            per session.
+        preprocessor: Cleans sentence text and extracts emotion tags.
+        emotion_mapper: Maps emotion tags to animation keyframe dicts.
+        synthesizer: Async TTS backend; returns base64 WAV or None on failure.
+        sink: Downstream consumer of completed TTSChunks.
+        barrier_timeout_seconds: How long on_stream_end waits for in-flight
+            synthesis tasks before cancelling them.
+        reference_id_resolver: Optional per-session voice resolver. Called once
+            per sentence dispatch; ``None`` falls back to synthesizer default.
+    """
+
     def __init__(
         self,
         *,
@@ -172,9 +116,7 @@ class TTSHook(AgentHook):
         for sentence in state.chunker.feed(delta):
             self._dispatch_sentence(state, sentence)
 
-    async def on_stream_end(
-        self, context: AgentHookContext, *, resuming: bool
-    ) -> None:
+    async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
         # Mid-turn break (tool call imminent) — do not flush. Partial buffer
         # must carry across the tool loop so a single logical response does
         # not get split into separate TTS groups.
@@ -194,28 +136,26 @@ class TTSHook(AgentHook):
         # TTS Barrier: block until every pending synth task settles, so the
         # caller (channel) can emit stream_end immediately after this returns.
         if state.pending:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*state.pending, return_exceptions=True),
-                    timeout=self._barrier_timeout,
-                )
-            except TimeoutError:
+            done, pending_set = await asyncio.wait(
+                state.pending,
+                timeout=self._barrier_timeout,
+            )
+            if pending_set:
                 logger.warning(
                     "TTS Barrier timeout ({}s) — {} tasks still pending; "
                     "cancelling. (session={})",
                     self._barrier_timeout,
-                    sum(1 for t in state.pending if not t.done()),
+                    len(pending_set),
                     key,
                 )
-                for t in state.pending:
-                    if not t.done():
-                        t.cancel()
+                for t in pending_set:
+                    t.cancel()
 
         # Turn fully wrapped — drop the per-session bucket so the next turn
         # for the same session starts clean (sequence back to 0, fresh chunker).
         self._states.pop(key, None)
 
-    # ── Internals ─────────────────────────────────────────────────────
+    # ── Internals ─────────────────────────────────────────────────────────────
 
     def _session_key(self, context: AgentHookContext) -> str:
         key = getattr(context, "session_key", None)
@@ -246,7 +186,9 @@ class TTSHook(AgentHook):
         except Exception:
             # Resolver failure must not block synthesis — fall back to the
             # synthesizer's constructor default.
-            logger.exception("TTSHook reference_id resolver raised (session={})", session_key)
+            logger.exception(
+                "TTSHook reference_id resolver raised (session={})", session_key
+            )
             return None
 
     def _dispatch_sentence(self, state: _SessionState, sentence: str) -> None:
@@ -288,7 +230,9 @@ class TTSHook(AgentHook):
         if not self._sink.is_enabled(session_key):
             return
         try:
-            audio_b64 = await self._synthesizer.synthesize(text, reference_id=reference_id)
+            audio_b64 = await self._synthesizer.synthesize(
+                text, reference_id=reference_id
+            )
         except Exception:
             logger.exception("TTS synth failed (seq={})", sequence)
             audio_b64 = None

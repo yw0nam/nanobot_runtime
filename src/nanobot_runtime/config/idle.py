@@ -1,4 +1,5 @@
 """Configuration models for the idle-watcher system job."""
+
 from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,7 +24,9 @@ class QuietHours(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     start: str = Field(description="HH:MM quiet-hours start in config timezone.")
-    end: str = Field(description="HH:MM quiet-hours end. If start > end, window spans midnight.")
+    end: str = Field(
+        description="HH:MM quiet-hours end. If start > end, window spans midnight."
+    )
 
 
 class IdleConfig(BaseModel):
@@ -31,10 +34,18 @@ class IdleConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    enabled: bool = Field(default=True, description="Enable or disable the idle watcher entirely.")
-    idle_timeout_s: int = Field(default=300, description="Seconds of silence before a nudge is sent.")
-    cooldown_s: int = Field(default=900, description="Minimum seconds between nudges for the same session.")
-    scan_interval_s: int = Field(default=30, description="How often the watcher scans sessions (seconds).")
+    enabled: bool = Field(
+        default=True, description="Enable or disable the idle watcher entirely."
+    )
+    idle_timeout_s: int = Field(
+        default=300, description="Seconds of silence before a nudge is sent."
+    )
+    cooldown_s: int = Field(
+        default=900, description="Minimum seconds between nudges for the same session."
+    )
+    scan_interval_s: int = Field(
+        default=30, description="How often the watcher scans sessions (seconds)."
+    )
     startup_grace_s: int = Field(
         default=120,
         ge=0,
@@ -42,10 +53,19 @@ class IdleConfig(BaseModel):
         "Prevents the reboot-storm where dormant sessions trigger bulk nudges before "
         "the in-memory cooldown table has been populated.",
     )
-    quiet_hours: "QuietHours | None" = Field(default=None, description="Time window during which nudges are suppressed.")
-    timezone: str = Field(default="UTC", description="IANA timezone name for quiet-hours evaluation.")
-    channels: tuple[str, ...] = Field(default=("desktop_mate",), description="Channel names that receive idle nudges.")
-    idle_prompt: str = Field(default=_DEFAULT_IDLE_PROMPT, description="Prompt template; {minutes} is substituted.")
+    quiet_hours: "QuietHours | None" = Field(
+        default=None, description="Time window during which nudges are suppressed."
+    )
+    timezone: str = Field(
+        default="UTC", description="IANA timezone name for quiet-hours evaluation."
+    )
+    channels: tuple[str, ...] = Field(
+        default=("desktop_mate",), description="Channel names that receive idle nudges."
+    )
+    idle_prompt: str = Field(
+        default=_DEFAULT_IDLE_PROMPT,
+        description="Prompt template; {minutes} is substituted.",
+    )
     context_providers: tuple[Callable[[], Awaitable[str]], ...] = Field(
         default_factory=tuple,
         description="Reserved for Phase 5.5 context injection.",

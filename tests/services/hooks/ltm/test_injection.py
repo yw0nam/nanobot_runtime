@@ -3,6 +3,7 @@
 Hook injects relevant long-term memories into the system prompt before the
 first LLM call of each user turn.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
@@ -12,7 +13,9 @@ from nanobot.agent.hook import AgentHookContext
 from nanobot_runtime.services.hooks.ltm.injection import LTMInjectionHook
 
 
-async def test_before_iteration_searches_last_user_message_and_injects_into_system_prompt() -> None:
+async def test_before_iteration_searches_last_user_message_and_injects_into_system_prompt() -> (
+    None
+):
     ltm = AsyncMock()
     ltm.search_memory.return_value = {
         "results": [
@@ -116,9 +119,7 @@ async def test_skips_injection_when_backend_returns_error() -> None:
 async def test_agent_id_is_forwarded_when_set() -> None:
     ltm = AsyncMock()
     ltm.search_memory.return_value = {"results": []}
-    hook = LTMInjectionHook(
-        ltm_client=ltm, user_id="sangjun", agent_id="yuri", limit=3
-    )
+    hook = LTMInjectionHook(ltm_client=ltm, user_id="sangjun", agent_id="yuri", limit=3)
 
     ctx = AgentHookContext(
         iteration=0,
@@ -165,9 +166,7 @@ async def test_double_fire_at_iteration_zero_is_idempotent() -> None:
 async def test_prepends_system_message_when_none_exists() -> None:
     """If no system message is present, hook should create one with the memories."""
     ltm = AsyncMock()
-    ltm.search_memory.return_value = {
-        "results": [{"id": "m1", "memory": "fact one"}]
-    }
+    ltm.search_memory.return_value = {"results": [{"id": "m1", "memory": "fact one"}]}
     hook = LTMInjectionHook(ltm_client=ltm, user_id="sangjun")
 
     ctx = AgentHookContext(

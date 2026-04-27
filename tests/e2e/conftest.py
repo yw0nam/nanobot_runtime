@@ -22,6 +22,7 @@ Run with:
 
 or individually (tests are not collected by default — see ``pyproject.toml``).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +30,6 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -37,9 +37,7 @@ from typing import Any
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Configuration discovery
-# ---------------------------------------------------------------------------
+# ── Configuration discovery ──────────────────────────────────────────────────
 
 
 def _repo_root() -> Path:
@@ -89,9 +87,7 @@ def _http_reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+# ── Fixtures ─────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="session")
@@ -140,9 +136,7 @@ def backends_up(workspace: Path) -> None:
     checks.append(("Irodori TTS", _http_reachable(tts_url.rstrip("/") + "/")))
 
     # LTM MCP
-    ltm_url = (
-        cfg.get("tools", {}).get("mcpServers", {}).get("ltm", {}).get("url", "")
-    )
+    ltm_url = cfg.get("tools", {}).get("mcpServers", {}).get("ltm", {}).get("url", "")
     if ltm_url:
         checks.append(("LTM MCP", _http_reachable(ltm_url)))
 
@@ -221,9 +215,7 @@ def gateway(
         proc.wait(timeout=5)
 
 
-# ---------------------------------------------------------------------------
-# GatewayProcess helper
-# ---------------------------------------------------------------------------
+# ── GatewayProcess helper ────────────────────────────────────────────────────
 
 
 class GatewayProcess:
@@ -250,9 +242,7 @@ class GatewayProcess:
         return sum(1 for ln in self.log_snapshot().splitlines() if substring in ln)
 
 
-# ---------------------------------------------------------------------------
-# WebSocket helpers
-# ---------------------------------------------------------------------------
+# ── WebSocket helpers ────────────────────────────────────────────────────────
 
 
 class LiveClient:

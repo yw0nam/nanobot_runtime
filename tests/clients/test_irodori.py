@@ -2,6 +2,7 @@
 
 Uses pytest_httpx's `httpx_mock` fixture to stub httpx.AsyncClient.
 """
+
 from __future__ import annotations
 
 import base64
@@ -57,9 +58,7 @@ async def test_empty_text_short_circuits_without_http_call(
     assert httpx_mock.get_requests() == []
 
 
-async def test_request_error_returns_none(
-    httpx_mock: HTTPXMock, base_url: str
-) -> None:
+async def test_request_error_returns_none(httpx_mock: HTTPXMock, base_url: str) -> None:
     httpx_mock.add_exception(httpx.ConnectError("refused"))
     client = IrodoriClient(base_url=base_url)
     assert await client.synthesize("Hello.") is None
@@ -149,7 +148,9 @@ async def test_per_call_reference_id_overrides_constructor_default(
     # Constructor sets a *different* reference_id ("alice") that does not
     # exist on disk — if synthesize used it, it would fail-closed and return
     # None without making the HTTP call. Per-call override must win.
-    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    client = IrodoriClient(
+        base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path
+    )
     result = await client.synthesize("Hi.", reference_id="bob")
     assert result == base64.b64encode(b"ok").decode("utf-8")
 
@@ -174,7 +175,9 @@ async def test_per_call_reference_id_none_falls_back_to_constructor(
         status_code=200,
     )
 
-    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    client = IrodoriClient(
+        base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path
+    )
     result = await client.synthesize("Hi.")  # no per-call override
     assert result == base64.b64encode(b"ok").decode("utf-8")
     assert b"reference_audio" in httpx_mock.get_requests()[0].content
@@ -195,7 +198,9 @@ async def test_per_call_reference_id_empty_string_disables_baked_in(
         status_code=200,
     )
 
-    client = IrodoriClient(base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path)
+    client = IrodoriClient(
+        base_url=base_url, reference_id="alice", ref_audio_dir=tmp_path
+    )
     result = await client.synthesize("Hi.", reference_id="")
     assert result == base64.b64encode(b"ok").decode("utf-8")
     assert b"reference_audio" not in httpx_mock.get_requests()[0].content

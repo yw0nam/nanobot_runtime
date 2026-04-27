@@ -15,6 +15,7 @@ spawn to ``run``, we guarantee both a live loop and a fully-wired agent.
 
 Pinned to nanobot 0.1.5.x — version drift fails loud at startup.
 """
+
 import asyncio
 import inspect
 import os
@@ -167,7 +168,13 @@ def run(
     resolved_config = config_path or os.getenv("NANOBOT_CONFIG", "./nanobot.json")
     resolved_workspace = workspace or os.getenv("NANOBOT_WORKSPACE", ".")
     app(
-        args=["gateway", "--config", resolved_config, "--workspace", resolved_workspace],
+        args=[
+            "gateway",
+            "--config",
+            resolved_config,
+            "--workspace",
+            resolved_workspace,
+        ],
         prog_name="nanobot",
         standalone_mode=False,
     )
