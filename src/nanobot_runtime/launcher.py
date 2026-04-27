@@ -14,6 +14,12 @@ installed as a console script in a workspace ``.venv``.
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Auto-load .env from workspace root (cwd) at import time.
+load_dotenv(Path.cwd() / ".env")
 
 from nanobot.agent.hook import AgentHook
 from nanobot.agent.loop import AgentLoop
