@@ -132,7 +132,6 @@ class WebSocketConfig(BaseModel):
   ```python
   _PERSONAS_PATH = Path(__file__).resolve().parents[3] / "yaml_files" / "personas.yml"
   ```
-
 ---
 
 ## 7. Pydantic Models
@@ -223,3 +222,4 @@ base_dir = yaml_path.parent
 | DEBUG logs in production paths | Dev only |
 | `__all__` in non-library modules | Not needed |
 | Section comments with `# ---` dashes | Use `# ── Name ───` unicode style |
+| BaseModel or ABC abstract classes are in the same file | Separate into `base.py` and `abc.py` if needed |

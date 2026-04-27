@@ -12,6 +12,7 @@ Default paths resolve against the workspace working directory (cwd), not
 against this file's location, so the launcher stays portable when
 installed as a console script in a workspace ``.venv``.
 """
+
 import os
 
 from nanobot.agent.hook import AgentHook
