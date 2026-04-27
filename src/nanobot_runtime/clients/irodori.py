@@ -56,7 +56,9 @@ class IrodoriClient:
 
     # ── TTSSynthesizer Protocol ───────────────────────────────────────
 
-    async def synthesize(self, text: str, *, reference_id: str | None = None) -> str | None:
+    async def synthesize(
+        self, text: str, *, reference_id: str | None = None
+    ) -> str | None:
         tts_text = text.strip() if text else ""
         if not tts_text:
             return None
@@ -132,10 +134,9 @@ class IrodoriClient:
                     response = await client.post(url, data=data)
                 response.raise_for_status()
                 return bytes(response.content)
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "IrodoriClient HTTP error {} from {}",
-                exc.response.status_code,
+        except httpx.HTTPStatusError:
+            logger.exception(
+                "IrodoriClient HTTP error from {}",
                 url,
             )
             return None

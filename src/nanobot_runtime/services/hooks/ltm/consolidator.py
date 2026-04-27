@@ -17,6 +17,7 @@ loop.consolidator in place. This matters because:
 Both paths therefore route through the LTM-saving wrapper without needing
 to reconstruct the inner Consolidator or re-wire AutoCompact.
 """
+
 import asyncio
 from typing import Any, Protocol
 
@@ -65,9 +66,7 @@ class LTMSavingConsolidator:
             await self._push_to_ltm(messages, summary)
         return summary
 
-    async def _push_to_ltm(
-        self, messages: list[dict[str, Any]], summary: str
-    ) -> None:
+    async def _push_to_ltm(self, messages: list[dict[str, Any]], summary: str) -> None:
         tasks = [self._safe_add(f"[conversation summary] {summary}")]
         for msg in messages:
             if msg.get("role") != "user":
@@ -76,7 +75,13 @@ class LTMSavingConsolidator:
             if not content or not isinstance(content, str):
                 continue
             tasks.append(self._safe_add(content))
-        await asyncio.gather(*tasks, return_exceptions=True)
+        aws = [asyncio.ensure_future(t) for t in tasks]
+        done, _ = await asyncio.wait(aws)
+        for fut in done:
+            if fut.exception() is not None:
+                logger.opt(exception=fut.exception()).warning(
+                    "LTM _push_to_ltm: unexpected exception from _safe_add"
+                )
 
     async def _safe_add(self, content: str) -> None:
         try:
@@ -86,9 +91,7 @@ class LTMSavingConsolidator:
                 agent_id=self._agent_id,
             )
         except Exception:
-            logger.exception(
-                "LTM add_memory failed (content[:60]={!r})", content[:60]
-            )
+            logger.exception("LTM add_memory failed (content[:60]={!r})", content[:60])
 
 
 def install_ltm_saving(

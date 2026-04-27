@@ -4,10 +4,10 @@ Validates count, MIME type, size, and base64 integrity; persists decoded
 images to the media directory. Every failure surfaces to the caller as an
 ``ImageRejectReason`` token so the FE can handle it without parsing prose.
 """
+
 import binascii
 import re
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -23,12 +23,14 @@ from nanobot_runtime.models.desktop_mate import (
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 # SVG is excluded to avoid embedded-script XSS surface.
-_IMAGE_MIME_ALLOWED: frozenset[str] = frozenset({
-    "image/png",
-    "image/jpeg",
-    "image/webp",
-    "image/gif",
-})
+_IMAGE_MIME_ALLOWED: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+    }
+)
 
 _DATA_URL_MIME_RE = re.compile(r"^data:([^;]+);base64,", re.DOTALL)
 
@@ -61,7 +63,9 @@ def _decode_images(
     if len(images) > _MAX_IMAGES_PER_MESSAGE:
         logger.warning(
             "desktop_mate: rejecting images from {}: count={} exceeds cap={}",
-            sender_id, len(images), _MAX_IMAGES_PER_MESSAGE,
+            sender_id,
+            len(images),
+            _MAX_IMAGES_PER_MESSAGE,
         )
         return [], "too_many"
 
@@ -76,13 +80,18 @@ def _decode_images(
         level = "error" if reason == "io_error" else "warning"
         getattr(logger, level)(
             "desktop_mate: rejecting image from {}: reason={} mime={} size_hint={}",
-            sender_id, reason, mime, size_hint,
+            sender_id,
+            reason,
+            mime,
+            size_hint,
         )
         for p in saved_paths:
             try:
                 Path(p).unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("desktop_mate: failed to unlink partial media {}: {}", p, exc)
+            except OSError:
+                logger.opt(exception=True).warning(
+                    "desktop_mate: failed to unlink partial media {}", p
+                )
         return [], reason
 
     for entry in images:
@@ -98,7 +107,9 @@ def _decode_images(
         except FileSizeExceeded:
             return _abort("too_large", mime=mime, size_hint=len(entry))
         except (binascii.Error, ValueError):
-            logger.opt(exception=True).warning("desktop_mate: decode failed (caller-fixable)")
+            logger.opt(exception=True).warning(
+                "desktop_mate: decode failed (caller-fixable)"
+            )
             return _abort("malformed", mime=mime, size_hint=len(entry))
         except OSError:
             logger.opt(exception=True).error("desktop_mate: image persist failed")
