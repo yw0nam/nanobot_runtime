@@ -23,14 +23,8 @@ jobs:
           python-version: "3.12"
       - run: uv sync --group dev
 
-      - name: Black check
-        run: uv run black --check src/ tests/
-
-      - name: Ruff check
-        run: uv run ruff check src/ tests/
-
-      - name: Anti-pattern check
-        run: uv run python scripts/check_antipatterns.py
+      - name: Run linters
+        run: bash scripts/lint.sh
 
   test:
     runs-on: ubuntu-latest
