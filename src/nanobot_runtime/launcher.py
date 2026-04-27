@@ -2,7 +2,7 @@
 
 This module is the entry point that workspace ``.env`` configurations
 target. Identity/runtime tunables (user_id, agent_id, LTM URL, idle
-thresholds) come from ``YURI_*`` environment variables; TTS tunables
+thresholds) come from ``LTM_*`` / ``IDLE_*`` / ``NANOBOT_*`` environment variables; TTS tunables
 (backend URL, rules/modes paths) come from ``TTS_*`` since the TTS stack
 is workspace-neutral. The same launcher binary can serve multiple
 workspaces; the workspace itself only carries ``nanobot.json`` + ``.env``
@@ -109,15 +109,15 @@ def _build_tts_hook() -> TTSHook:
 
 
 def _build_idle_config() -> IdleConfig:
-    """Read YURI_IDLE_* env vars into an :class:`IdleConfig`.
+    """Read IDLE_* env vars into an :class:`IdleConfig`.
 
     Defaults: 5-minute idle threshold, 15-minute cooldown, 30s scan tick,
     120s startup grace, quiet hours 02:00–07:00 in Asia/Tokyo, desktop_mate
-    channel only. Unset ``YURI_IDLE_QUIET_START`` + ``_END`` (both empty)
+    channel only. Unset ``IDLE_QUIET_START`` + ``IDLE_QUIET_END`` (both empty)
     disables the quiet window.
     """
-    quiet_start = os.getenv("YURI_IDLE_QUIET_START", "02:00")
-    quiet_end = os.getenv("YURI_IDLE_QUIET_END", "07:00")
+    quiet_start = os.getenv("IDLE_QUIET_START", "02:00")
+    quiet_end = os.getenv("IDLE_QUIET_END", "07:00")
     quiet_hours = (
         QuietHours(start=quiet_start, end=quiet_end)
         if quiet_start and quiet_end
@@ -125,17 +125,17 @@ def _build_idle_config() -> IdleConfig:
     )
     channels = tuple(
         c.strip()
-        for c in os.getenv("YURI_IDLE_CHANNELS", "desktop_mate").split(",")
+        for c in os.getenv("IDLE_CHANNELS", "desktop_mate").split(",")
         if c.strip()
     )
     return IdleConfig(
-        enabled=os.getenv("YURI_IDLE_ENABLED", "1") != "0",
-        idle_timeout_s=int(os.getenv("YURI_IDLE_TIMEOUT_S", "300")),
-        cooldown_s=int(os.getenv("YURI_IDLE_COOLDOWN_S", "900")),
-        scan_interval_s=int(os.getenv("YURI_IDLE_SCAN_INTERVAL_S", "30")),
-        startup_grace_s=int(os.getenv("YURI_IDLE_STARTUP_GRACE_S", "120")),
+        enabled=os.getenv("IDLE_ENABLED", "1") != "0",
+        idle_timeout_s=int(os.getenv("IDLE_TIMEOUT_S", "300")),
+        cooldown_s=int(os.getenv("IDLE_COOLDOWN_S", "900")),
+        scan_interval_s=int(os.getenv("IDLE_SCAN_INTERVAL_S", "30")),
+        startup_grace_s=int(os.getenv("IDLE_STARTUP_GRACE_S", "120")),
         quiet_hours=quiet_hours,
-        timezone=os.getenv("YURI_IDLE_TIMEZONE", "Asia/Tokyo"),
+        timezone=os.getenv("IDLE_TIMEZONE", "Asia/Tokyo"),
         channels=channels,
     )
 
@@ -144,10 +144,10 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
     hooks: list[AgentHook] = list(
         build_ltm_hooks(
             loop,
-            user_id=os.getenv("YURI_LTM_USER_ID", "sangjun"),
-            agent_id=os.getenv("YURI_LTM_AGENT_ID", "yuri"),
-            ltm_url=os.getenv("YURI_LTM_URL", "http://127.0.0.1:7777/mcp/"),
-            top_k=int(os.getenv("YURI_LTM_TOP_K", "5")),
+            user_id=os.getenv("LTM_USER_ID", "sangjun"),
+            agent_id=os.getenv("LTM_AGENT_ID", "yuri"),
+            ltm_url=os.getenv("LTM_URL", "http://127.0.0.1:7777/mcp/"),
+            top_k=int(os.getenv("LTM_TOP_K", "5")),
         )
     )
     if os.getenv("TTS_ENABLED", "1") != "0":
@@ -156,13 +156,13 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
     idle_config = _build_idle_config()
     if idle_config.enabled:
         if loop.cron_service is None:
-            # Operator opted in via YURI_IDLE_ENABLED; a single startup
+            # Operator opted in via IDLE_ENABLED; a single startup
             # warning is too easy to miss when the user-visible symptom is
             # "Yuri stopped greeting me." Fail loud so misconfig surfaces
             # at boot rather than as a slow degradation.
             raise RuntimeError(
-                "YURI_IDLE_ENABLED=1 but AgentLoop has no cron_service. "
-                "Either disable idle (YURI_IDLE_ENABLED=0) or ensure the "
+                "IDLE_ENABLED=1 but AgentLoop has no cron_service. "
+                "Either disable idle (IDLE_ENABLED=0) or ensure the "
                 "AgentLoop is constructed with a CronService."
             )
         install_idle_system_job(
@@ -178,8 +178,8 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
 def main() -> None:
     run(
         hooks_factory=_hooks_factory,
-        config_path=os.getenv("YURI_NANOBOT_CONFIG", "./nanobot.json"),
-        workspace=os.getenv("YURI_WORKSPACE", "."),
+        config_path=os.getenv("NANOBOT_CONFIG", "./nanobot.json"),
+        workspace=os.getenv("NANOBOT_WORKSPACE", "."),
     )
 
 
