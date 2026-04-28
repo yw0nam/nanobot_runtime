@@ -54,10 +54,12 @@ nanobot_runtime/
 
 ## 왜 이렇게 되어 있는가 (non-obvious 한 부분)
 
-- **`nanobot-ai` 는 PyPI 에서만 받는다.** 과거에 `[tool.uv.sources]` 로
-  `../nanobot` 경로 의존을 걸면 클론이 다른 디렉토리 레이아웃에서 전혀
-  resolve 되지 않는다 (상대경로가 consumer 기준으로 꼬임). `nanobot-ai`
-  는 PyPI 에 publish 되어 있으므로 경로 의존을 걸 이유가 없다.
+- **`nanobot-ai` 에 `[tool.uv.sources]` 로 path 의존을 걸지 않는다.** 과거에
+  `../nanobot` 경로 의존을 걸어보니 클론이 다른 디렉토리 레이아웃에서 전혀
+  resolve 되지 않았다 (상대경로가 consumer 기준으로 꼬임). PyPI 또는 git
+  source (`{ git = "...", branch = "..." }`) 는 이 문제가 없다 — 본 레포
+  자체가 `nanobot-ai` 를 git source 로 추적해 `develop` 브랜치에서 받는다
+  (`pyproject.toml` `[tool.uv.sources]`).
 
 - **Gateway 진입은 Typer `app` 을 통해 dispatch** (`_run_gateway` 같은
   private 함수 쓰지 않음). PyPI 0.1.5.post1 에서는 `_run_gateway` 가
@@ -89,14 +91,17 @@ nanobot_runtime/
   resolve 한다 — 그래야 패키지 안에 살면서도 워크스페이스의 `resources/`
   를 가리킬 수 있다.
 
-- **Env var prefix 는 두 그룹으로 갈라져 있다.** TTS 관련은 워크스페이스
-  중립 런타임이라는 이유로 `TTS_*` (`TTS_ENABLED`, `TTS_URL`,
+- **Env var prefix 는 모두 generic.** 과거에는 LTM/Idle 등이 첫 워크
+  스페이스 명을 따 `YURI_*` prefix 를 썼지만, 두 번째 워크스페이스 대비
+  로 generic prefix 마이그레이션이 완료됐다 (`feat/tts-channel-gating`
+  패턴이 시작점). 현 prefix: `TTS_*` (`TTS_ENABLED`, `TTS_URL`,
   `TTS_RULES_PATH`, `TTS_MODES_PATH`, `TTS_BARRIER_TIMEOUT`,
-  `TTS_REF_AUDIO`). LTM/Idle 등 워크스페이스-identity 관련은 첫 워크
-  스페이스 명을 그대로 따서 `YURI_*` prefix 를 유지 (`YURI_LTM_URL`,
-  `YURI_IDLE_*`). 두 번째 워크스페이스가 생기면 후자도 generic prefix 로
-  마이그레이션 가능 — TTS 쪽 마이그레이션 패턴 (`feat/tts-channel-gating`)
-  이 그대로 템플릿 역할을 한다.
+  `TTS_REF_AUDIO`), `LTM_*` (`LTM_URL`, `LTM_USER_ID`, `LTM_AGENT_ID`,
+  `LTM_TOP_K`), `IDLE_*` (`IDLE_ENABLED`, `IDLE_TIMEOUT_S`,
+  `IDLE_COOLDOWN_S`, `IDLE_SCAN_INTERVAL_S`, `IDLE_STARTUP_GRACE_S`,
+  `IDLE_TIMEZONE`, `IDLE_QUIET_START`, `IDLE_QUIET_END`, `IDLE_CHANNELS`),
+  `NANOBOT_*` (`NANOBOT_CONFIG`, `NANOBOT_WORKSPACE`). `docs/superpowers/`
+  의 spec/plan 문서에 남은 `YURI_*` 언급은 PR 분리 historical record.
 
 - **TTS 디스패치는 채널-mode 게이트를 거친다.** `TTSHook` 가 모든 turn 에
   `on_stream` 을 받지만, 실제 합성 여부는 sink 의 `is_enabled(session_key)`

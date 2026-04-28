@@ -19,9 +19,9 @@ from nanobot_runtime.launcher import _build_idle_config, _resolve_tts_rules_path
 
 @pytest.fixture(autouse=True)
 def _clear_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wipe inherited YURI_* and TTS_* env vars so each test starts from defaults."""
+    """Wipe inherited launcher-relevant env vars so each test starts from defaults."""
     for k in list(os.environ):
-        if k.startswith("YURI_") or k.startswith("TTS_"):
+        if k.startswith(("LTM_", "IDLE_", "TTS_", "NANOBOT_")):
             monkeypatch.delenv(k, raising=False)
 
 
@@ -40,24 +40,24 @@ def test_idle_config_defaults_match_docs() -> None:
 
 
 def test_idle_config_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("YURI_IDLE_ENABLED", "0")
+    monkeypatch.setenv("IDLE_ENABLED", "0")
     assert _build_idle_config().enabled is False
 
 
 def test_idle_config_quiet_hours_disabled_when_both_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Setting both YURI_IDLE_QUIET_START and _END to "" turns off quiet
-    hours entirely. Documented behaviour — used by the manual idle smoke."""
-    monkeypatch.setenv("YURI_IDLE_QUIET_START", "")
-    monkeypatch.setenv("YURI_IDLE_QUIET_END", "")
+    """Setting both IDLE_QUIET_START and IDLE_QUIET_END to "" turns off
+    quiet hours entirely. Documented behaviour — used by the manual idle smoke."""
+    monkeypatch.setenv("IDLE_QUIET_START", "")
+    monkeypatch.setenv("IDLE_QUIET_END", "")
     assert _build_idle_config().quiet_hours is None
 
 
 def test_idle_config_channels_split_strips_whitespace_and_blanks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("YURI_IDLE_CHANNELS", "desktop_mate, slack ,")
+    monkeypatch.setenv("IDLE_CHANNELS", "desktop_mate, slack ,")
     assert _build_idle_config().channels == ("desktop_mate", "slack")
 
 
@@ -67,7 +67,7 @@ def test_idle_config_int_envvar_typo_surfaces_as_value_error(
     """Integer-coerced env vars (timeout/cooldown/scan/grace) raise
     ValueError on garbage input rather than silently defaulting — keeps
     operator typos loud at startup."""
-    monkeypatch.setenv("YURI_IDLE_TIMEOUT_S", "5m")
+    monkeypatch.setenv("IDLE_TIMEOUT_S", "5m")
     with pytest.raises(ValueError):
         _build_idle_config()
 
@@ -173,7 +173,7 @@ class TestBuildTtsHookFailsWhenModesMissing:
             lambda **k: None,  # never actually installed (we set IDLE off)
         )
         monkeypatch.setenv("TTS_ENABLED", "0")
-        monkeypatch.setenv("YURI_IDLE_ENABLED", "0")
+        monkeypatch.setenv("IDLE_ENABLED", "0")
         monkeypatch.chdir(tmp_path)  # no resources/ dir at all
 
         from unittest.mock import MagicMock
