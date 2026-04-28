@@ -112,12 +112,12 @@ idle nudge is verified with a standalone smoke rather than the fixture.
 cd ../yuri  # the workspace
 
 # Start the gateway with aggressive idle settings.
-YURI_IDLE_ENABLED=1 \
-YURI_IDLE_TIMEOUT_S=10 \
-YURI_IDLE_SCAN_INTERVAL_S=3 \
-YURI_IDLE_COOLDOWN_S=60 \
-YURI_IDLE_QUIET_START= \
-YURI_IDLE_QUIET_END= \
+IDLE_ENABLED=1 \
+IDLE_TIMEOUT_S=10 \
+IDLE_SCAN_INTERVAL_S=3 \
+IDLE_COOLDOWN_S=60 \
+IDLE_QUIET_START= \
+IDLE_QUIET_END= \
 .venv/bin/nanobot-launcher
 ```
 

@@ -85,16 +85,15 @@ E2E marker 는 `pyproject.toml` 의 `addopts = "-m 'not integration and not e2e'
 cd <workspace>
 
 # 짧은 idle 환경변수로 게이트웨이 재기동
-YURI_IDLE_TIMEOUT_S=10 \
-YURI_IDLE_SCAN_INTERVAL_S=3 \
-YURI_IDLE_COOLDOWN_S=60 \
-YURI_IDLE_QUIET_START= YURI_IDLE_QUIET_END= \
+IDLE_TIMEOUT_S=10 \
+IDLE_SCAN_INTERVAL_S=3 \
+IDLE_COOLDOWN_S=60 \
+IDLE_QUIET_START= IDLE_QUIET_END= \
 .venv/bin/nanobot-launcher
 ```
 
 WS 클라이언트로 메시지 1개 보내고 15초 대기 — 자발 `stream_start →
-delta → stream_end` 가 들어오면 OK. (`YURI_...` 대신 워크스페이스 prefix
-에 맞춰 해석.)
+delta → stream_end` 가 들어오면 OK.
 
 ---
 
