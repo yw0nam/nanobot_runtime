@@ -30,7 +30,10 @@ from nanobot_runtime.gateway import run
 from nanobot_runtime.services.channels.desktop_mate import LazyChannelTTSSink
 from nanobot_runtime.services.hooks import build_ltm_hooks
 from nanobot_runtime.services.hooks.tts import TTSHook
-from nanobot_runtime.services.proactive.installer import install_idle_system_job
+from nanobot_runtime.services.proactive.installer import (
+    IDLE_SYSTEM_JOB_ID,
+    install_idle_system_job,
+)
 from nanobot_runtime.services.tts.chunker import SentenceChunker
 from nanobot_runtime.services.tts.emotion_mapper import EmotionMapper
 from nanobot_runtime.services.tts.modes import load_channel_modes
@@ -171,6 +174,9 @@ def _hooks_factory(loop: AgentLoop) -> list[AgentHook]:
             cron=loop.cron_service,
             config=idle_config,
         )
+    elif loop.cron_service is not None:
+        # remove_job은 system_event kind를 거부하므로 enable_job으로 비활성화한다.
+        loop.cron_service.enable_job(IDLE_SYSTEM_JOB_ID, False)
 
     return hooks
 

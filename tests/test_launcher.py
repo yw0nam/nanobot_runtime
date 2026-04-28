@@ -185,3 +185,25 @@ class TestBuildTtsHookFailsWhenModesMissing:
         hooks = _hooks_factory(loop)
 
         assert hooks == []
+
+    def test_idle_disabled_with_persisted_job_calls_enable_job_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """IDLE_ENABLED=0 + cron_service present → enable_job(id, False) must be
+        called so a job persisted in jobs.json from a previous run is suppressed."""
+        monkeypatch.setattr("nanobot_runtime.launcher.build_ltm_hooks", lambda *a, **k: [])
+        monkeypatch.setenv("TTS_ENABLED", "0")
+        monkeypatch.setenv("IDLE_ENABLED", "0")
+        monkeypatch.chdir(tmp_path)
+
+        from unittest.mock import MagicMock
+
+        from nanobot_runtime.launcher import _hooks_factory
+        from nanobot_runtime.services.proactive.installer import IDLE_SYSTEM_JOB_ID
+
+        loop = MagicMock()
+        loop.cron_service = MagicMock()
+
+        _hooks_factory(loop)
+
+        loop.cron_service.enable_job.assert_called_once_with(IDLE_SYSTEM_JOB_ID, False)
